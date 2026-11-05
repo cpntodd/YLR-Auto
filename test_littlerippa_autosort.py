@@ -292,6 +292,28 @@ class FilingTest(unittest.TestCase):
         tagged.mkdir()
         self.assertEqual(m.find_show_dir(self.tv, "Angel", 1999, 2426), tagged)
 
+    def test_show_with_a_different_year_gets_its_own_folder(self):
+        (self.tv / "Battlestar Galactica (1978)").mkdir()
+        show = m.find_show_dir(self.tv, "Battlestar Galactica", 2004)
+        self.assertEqual(show.name, "Battlestar Galactica (2004)")
+        self.assertFalse(show.exists())
+
+    def test_show_prefers_the_exact_year_over_a_yearless_folder(self):
+        (self.tv / "Battlestar Galactica").mkdir()
+        exact = self.tv / "Battlestar Galactica (2004) [tmdbid-1972]"
+        exact.mkdir()
+        self.assertEqual(m.find_show_dir(self.tv, "Battlestar Galactica", 2004), exact)
+
+    def test_show_reuses_a_yearless_folder(self):
+        yearless = self.tv / "Battlestar Galactica"
+        yearless.mkdir()
+        self.assertEqual(m.find_show_dir(self.tv, "Battlestar Galactica", 2004), yearless)
+
+    def test_show_without_a_year_reuses_any_folder_of_that_name(self):
+        dated = self.tv / "Battlestar Galactica (2004)"
+        dated.mkdir()
+        self.assertEqual(m.find_show_dir(self.tv, "Battlestar Galactica", None), dated)
+
     def test_reuses_existing_show_and_season_folders(self):
         (self.tv / "IT Crowd" / "Season 1").mkdir(parents=True)
         (self.tv / "IT Crowd" / "Season 1" / "Episode 3.mkv").write_bytes(b"x")

@@ -6,6 +6,7 @@
 - Add a TMDb ID tag setting: none, folder, or folder and file.
 - Recognise a film already in the library whichever tag style it was filed under,
   including when filing without a TMDb match.
+- Keep same-named shows from different years in separate folders.
 
 ## 1.0.0 (2026-11-05)
 

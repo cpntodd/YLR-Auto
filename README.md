@@ -140,7 +140,8 @@ year:
 For a series, either tagged choice tags the show folder only. Changing the setting
 does not rename files already in a library. An existing show folder is reused even if it is named
 differently (`IT Crowd` for "The IT Crowd"), and so is an existing `Season 1` folder,
-so a show is never split in two. Characters Jellyfin and SMB reserve
+so a show is never split in two. A show folder with a different year is treated as a
+different show. Characters Jellyfin and SMB reserve
 (`< > : " / \ | ? *`) are removed.
 
 Jellyfin discourages the Mixed library type because its metadata matching is

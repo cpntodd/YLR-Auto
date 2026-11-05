@@ -451,13 +451,22 @@ def _comparable(name):
 
 def find_show_dir(tv_library, title, year, tmdb_id=None, tmdb_tag=TMDB_TAG_NONE):
     """The library folder for a show, reusing one that already exists under
-    a slightly different name so a show is never split across two folders."""
+    a slightly different name so a show is never split across two folders.
+
+    A folder with a different year is a different show of the same name. A
+    folder with no year could be either, so one with the exact year wins.
+    """
     wanted = tv_library / library_folder_name(title, year, tmdb_id, tmdb_tag)
     if wanted.is_dir():
         return wanted
     key = _comparable(title)
-    for folder in sorted(p for p in tv_library.iterdir() if p.is_dir()):
-        if _comparable(folder.name) == key:
+    same_name = [folder for folder in sorted(tv_library.iterdir())
+                 if folder.is_dir() and _comparable(folder.name) == key]
+    for folder in same_name:
+        if _year_of(folder.name) == year:
+            return folder
+    for folder in same_name:
+        if year is None or _year_of(folder.name) is None:
             return folder
     return wanted
 
