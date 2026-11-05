@@ -121,14 +121,24 @@ Titles left behind (extras, "play all") stay in the rip folder, which is marked 
 
 Film layout:
 
-    Movies/Ghost (1990) [tmdbid-251]/Ghost (1990) [tmdbid-251].mkv
+    Movies/Ghost (1990)/Ghost (1990).mkv
 
 Series layout:
 
-    TV Shows/Angel (1999) [tmdbid-2426]/Season 02/Angel (1999) - S02E01 - Judgment.mkv
+    TV Shows/Angel (1999)/Season 02/Angel (1999) - S02E01 - Judgment.mkv
 
-The `[tmdbid-N]` tag makes Jellyfin use that exact TMDb entry, and is only added when
-a TMDb match is picked. An existing show folder is reused even if it is named
+**Settings, Naming, TMDb ID tag** can add a `[tmdbid-N]` tag when a TMDb match is
+picked, which makes Jellyfin use that exact entry instead of matching on the name and
+year:
+
+| TMDb ID tag | Film layout |
+|---|---|
+| None (default) | `Ghost (1990)/Ghost (1990).mkv` |
+| Folder | `Ghost (1990) [tmdbid-251]/Ghost (1990).mkv` |
+| Folder and file | `Ghost (1990) [tmdbid-251]/Ghost (1990) [tmdbid-251].mkv` |
+
+For a series, either tagged choice tags the show folder only. Changing the setting
+does not rename files already in a library. An existing show folder is reused even if it is named
 differently (`IT Crowd` for "The IT Crowd"), and so is an existing `Season 1` folder,
 so a show is never split in two. Characters Jellyfin and SMB reserve
 (`< > : " / \ | ? *`) are removed.
@@ -138,9 +148,9 @@ unreliable. Prefer a Movies-type and a Shows-type library.
 
 ## Duplicates when filing by hand
 
-Movies: if the library already has the movie, in any of the forms
-`Name (Year) [tmdbid-N]`, `Name (Year)` or the older `Name`, the runtimes are
-compared.
+Movies: if the library already has the movie, as `Name (Year)` with or without a
+`[tmdbid-N]` tag on the folder or file, or as the older `Name`, the runtimes are
+compared. A folder tagged with a different TMDb ID is a different film.
 
 - **Same runtime** (within 1 minute, or 1% for long films): the rip is a duplicate and
   is deleted.

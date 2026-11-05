@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Name films `Name (Year)` by default, without the `[tmdbid-N]` tag.
+- Add a TMDb ID tag setting: none, folder, or folder and file.
+- Recognise a film already in the library whichever tag style it was filed under,
+  including when filing without a TMDb match.
+
 ## 1.0.0 (2026-11-05)
 
 First public release.

@@ -96,6 +96,25 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(m.safe_filename("Star Wars: A New Hope"), "Star Wars - A New Hope")
         self.assertEqual(m.safe_filename('What? "Now" / Then.'), "What Now Then")
 
+    def test_movie_destination_defaults_to_name_and_year(self):
+        self.assertEqual(m.movie_destination(Path("lib"), "Ghost", 1990, 251),
+                         Path("lib/Ghost (1990)/Ghost (1990).mkv"))
+
+    def test_movie_destination_tags_only_the_folder(self):
+        self.assertEqual(m.movie_destination(Path("lib"), "Ghost", 1990, 251, m.TMDB_TAG_FOLDER),
+                         Path("lib/Ghost (1990) [tmdbid-251]/Ghost (1990).mkv"))
+
+    def test_movie_destination_tags_folder_and_file(self):
+        self.assertEqual(m.movie_destination(Path("lib"), "Ghost", 1990, 251, m.TMDB_TAG_FOLDER_AND_FILE),
+                         Path("lib/Ghost (1990) [tmdbid-251]/Ghost (1990) [tmdbid-251].mkv"))
+
+    def test_movie_destination_has_no_tag_without_a_match(self):
+        self.assertEqual(m.movie_destination(Path("lib"), "Ghost", 1990, None, m.TMDB_TAG_FOLDER_AND_FILE),
+                         Path("lib/Ghost (1990)/Ghost (1990).mkv"))
+
+    def test_unknown_tag_style_uses_the_plain_name(self):
+        self.assertEqual(m.library_folder_name("Ghost", 1990, 251, "bogus"), "Ghost (1990)")
+
     def test_library_name_carries_tmdb_id(self):
         self.assertEqual(m.library_name("Ghost", 1990, 251), "Ghost (1990) [tmdbid-251]")
         self.assertEqual(m.library_name("Ghost", None), "Ghost")
@@ -164,10 +183,10 @@ class FilingTest(unittest.TestCase):
 
     # Movies
 
-    def test_moves_main_feature_with_tmdb_tag_and_removes_empty_folder(self):
+    def test_moves_main_feature_with_name_and_year_and_removes_empty_folder(self):
         d = self.make_rip("LES_MISERABLES", {"B1_t02.mkv": 100})
         self.file_movie(d, "Les Misérables", 2012, 82695)
-        name = "Les Misérables (2012) [tmdbid-82695]"
+        name = "Les Misérables (2012)"
         self.assertTrue((self.lib / name / (name + ".mkv")).exists())
         self.assertFalse(d.exists())
 
@@ -184,7 +203,32 @@ class FilingTest(unittest.TestCase):
         self.file_movie(d, "Salt", 2010, 27576)
         self.assertEqual((self.lib / "Salt" / "Salt.mkv").read_bytes(), fake_mkv(5760))
         self.assertFalse(d.exists())
-        self.assertFalse((self.lib / "Salt (2010) [tmdbid-27576]").exists())
+        self.assertFalse((self.lib / "Salt (2010)").exists())
+
+    def test_finds_copies_filed_under_every_tag_style(self):
+        forms = ("Salt (2010) [tmdbid-27576]/Salt (2010) [tmdbid-27576].mkv",
+                 "Salt (2010) [tmdbid-27576]/Salt (2010).mkv",
+                 "Salt (2010)/Salt (2010).mkv")
+        for form in forms:
+            for tmdb_id in (27576, None):
+                with self.subTest(form=form, tmdb_id=tmdb_id):
+                    copy = self.lib / form
+                    copy.parent.mkdir()
+                    copy.write_bytes(fake_mkv(5760))
+                    d = self.make_rip("SALT", {"B1_t00.mkv": fake_mkv(5760)})
+                    self.assertEqual(self.file_movie(d, "Salt", 2010, tmdb_id), copy)
+                    self.assertEqual(sorted(self.lib.iterdir()), [copy.parent])
+                    copy.unlink()
+                    copy.parent.rmdir()
+
+    def test_folder_tagged_with_another_film_is_not_a_copy(self):
+        other = self.lib / "Salt (2010) [tmdbid-1]" / "Salt (2010) [tmdbid-1].mkv"
+        other.parent.mkdir()
+        other.write_bytes(fake_mkv(5760))
+        d = self.make_rip("SALT", {"B1_t00.mkv": fake_mkv(5760)})
+        dest = self.file_movie(d, "Salt", 2010, 27576)
+        self.assertEqual(dest, self.lib / "Salt (2010)" / "Salt (2010).mkv")
+        self.assertTrue(other.exists())
 
     def test_duplicate_of_other_format_is_deleted(self):
         self.own("Salt (2010)", fake_mp4(5760), ext=".mp4")
@@ -233,11 +277,20 @@ class FilingTest(unittest.TestCase):
         d = self.make_rip("ANGEL_S1_D2", {"B1_t00.mkv": 10, "B1_t01.mkv": 10})
         show = m.find_show_dir(self.tv, "Angel", 1999, 2426)
         m.file_episodes(self.tv_job(d, show, [5, 6]))
-        season = self.tv / "Angel (1999) [tmdbid-2426]" / "Season 01"
+        season = self.tv / "Angel (1999)" / "Season 01"
         self.assertEqual(sorted(p.name for p in season.iterdir()),
                          ["Angel (1999) - S01E05 - Episode 5 title.mkv",
                           "Angel (1999) - S01E06 - Episode 6 title.mkv"])
         self.assertFalse(d.exists())
+
+    def test_tags_a_new_show_folder_when_asked(self):
+        show = m.find_show_dir(self.tv, "Angel", 1999, 2426, m.TMDB_TAG_FOLDER)
+        self.assertEqual(show.name, "Angel (1999) [tmdbid-2426]")
+
+    def test_reuses_a_tagged_show_folder_when_tagging_is_off(self):
+        tagged = self.tv / "Angel (1999) [tmdbid-2426]"
+        tagged.mkdir()
+        self.assertEqual(m.find_show_dir(self.tv, "Angel", 1999, 2426), tagged)
 
     def test_reuses_existing_show_and_season_folders(self):
         (self.tv / "IT Crowd" / "Season 1").mkdir(parents=True)
@@ -477,9 +530,15 @@ class AutoFileTest(unittest.TestCase):
         result = m.auto_file_film(folder, "GHOST", self.tmdb, self.lib)
         self.assertIsInstance(result, m.AutoFiled)
         self.assertEqual(result.match.tmdb_id, 9)
-        name = "Ghost (2024) [tmdbid-9]"
+        name = "Ghost (2024)"
         self.assertTrue((self.lib / name / f"{name}.mkv").exists())
         self.assertEqual([p.name for p in folder.glob("*.mkv")], ["t01.mkv"])
+
+    def test_applies_the_chosen_tag_style(self):
+        folder = self.make_rip("GHOST", t00=fake_mkv(98 * 60))
+        result = m.auto_file_film(folder, "GHOST", self.tmdb, self.lib, m.TMDB_TAG_FOLDER_AND_FILE)
+        name = "Ghost (2024) [tmdbid-9]"
+        self.assertEqual(result.destination, self.lib / name / f"{name}.mkv")
 
     def test_declines_series_label(self):
         folder = self.make_rip("ANGEL_S1_D2", t00=fake_mkv(44 * 60))

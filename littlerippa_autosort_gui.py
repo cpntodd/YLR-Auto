@@ -126,6 +126,7 @@ DEFAULT_CONFIG = {
     "eject_when_finished": False,
     "start_at_login": True,
     "use_system_theme": False,
+    "tmdb_tag": core.TMDB_TAG_NONE,
     "libraries": {
         "movies": str(Path.home() / "Media" / "Movies"),
         "shows": str(Path.home() / "Media" / "TV Shows"),
@@ -388,7 +389,7 @@ class RipPanel:
 
         self.season_spin = Gtk.SpinButton.new_with_range(0, 99, 1)
         self.season_spin.set_value(self.guess.season or 1)
-        self.season_spin.connect("value-changed", lambda _: self._refresh_target())
+        self.season_spin.connect("value-changed", lambda _: self.refresh_target())
         self.first_episode_spin = Gtk.SpinButton.new_with_range(1, 999, 1)
         self.first_episode_spin.connect("value-changed", lambda _: self._renumber())
         self.series_row = labelled("Season", self.season_spin)
@@ -482,7 +483,7 @@ class RipPanel:
             return  # dialog cancelled
         self.manual_dir = Path(folder.get_path())
         self.manual_label.set_text(str(self.manual_dir))
-        self._refresh_target()
+        self.refresh_target()
 
     # Titles
 
@@ -584,17 +585,17 @@ class RipPanel:
         self.results.set_visible(False)
         if not self.destination.uses_tmdb:
             self.results_note.set_text("Named as typed; this library type has no TMDb lookup.")
-            self._refresh_target()
+            self.refresh_target()
             return
         if not uses_tmdb:
             self.results_note.set_text("Named as typed. Add a TMDb API key in Settings to look names up.")
-            self._refresh_target()
+            self.refresh_target()
             return
 
         query = self.name_entry.get_text().strip()
         if not query:
             self.results_note.set_text("Type a name to search TMDb.")
-            self._refresh_target()
+            self.refresh_target()
             return
         self.results_note.set_text("Searching TMDb...")
         self.search_generation += 1
@@ -607,7 +608,7 @@ class RipPanel:
                 return
             if error:
                 self.results_note.set_text(f"{error} The typed name will be used.")
-                self._refresh_target()
+                self.refresh_target()
                 return
             self._show_matches(matches[:MAX_SEARCH_RESULTS])
         run_in_background(lambda: search(query, year), done)
@@ -617,7 +618,7 @@ class RipPanel:
         if not matches:
             self.results_note.set_text("No TMDb results. The typed name will be used; "
                                        "edit it or the year and search again.")
-            self._refresh_target()
+            self.refresh_target()
             return
         self.results_note.set_text("Pick the TMDb match, or edit the name to use it as typed.")
         for match in matches:
@@ -658,7 +659,7 @@ class RipPanel:
         self.match_runtime = None
         if self.match and self.layout == FILM:
             self._fetch_runtime(self.match)
-        self._refresh_target()
+        self.refresh_target()
 
     def _fetch_runtime(self, match):
         """TMDb's runtime, shown next to the destination so the main feature
@@ -676,7 +677,7 @@ class RipPanel:
 
     # Destination
 
-    def _refresh_target(self):
+    def refresh_target(self):
         """Resolve the series folder off-thread, because it lists the library
         on the network share, then fetch episode names for the season."""
         self.series_target = None
@@ -694,10 +695,11 @@ class RipPanel:
         generation = self.target_generation
         season = int(self.season_spin.get_value())
         match, tmdb, tmdb_id = self.match, self.window.tmdb, self._tmdb_id()
+        tmdb_tag = self.window.config["tmdb_tag"]
 
         def work():
-            show_dir = (core.find_show_dir(root, name, year, tmdb_id) if root.is_dir()
-                        else root / core.library_name(name, year, tmdb_id))
+            show_dir = (core.find_show_dir(root, name, year, tmdb_id, tmdb_tag) if root.is_dir()
+                        else root / core.library_folder_name(name, year, tmdb_id, tmdb_tag))
             season_dir = core.find_season_dir(show_dir, season)
             next_number = core.next_episode_number(season_dir)
             episodes = tmdb.season_episodes(match.tmdb_id, season) if match and tmdb else {}
@@ -741,7 +743,9 @@ class RipPanel:
         if problem:
             preview = problem
         elif self.layout == FILM:
-            preview = f"Will move {chosen[0].title.path.name} to\n{core.movie_destination(root, name, year, self._tmdb_id())}"
+            destination = core.movie_destination(root, name, year, self._tmdb_id(),
+                                                  self.window.config["tmdb_tag"])
+            preview = f"Will move {chosen[0].title.path.name} to\n{destination}"
             if self.match_runtime:
                 preview += (f"\nTMDb runtime {core.minutes(self.match_runtime)}, "
                             f"title {core.minutes(chosen[0].title.duration)}")
@@ -775,7 +779,8 @@ class RipPanel:
         folder = self.rip.folder
 
         if self.layout == FILM:
-            job = core.MovieJob(folder, chosen[0].title.path, name, year, self._tmdb_id())
+            job = core.MovieJob(folder, chosen[0].title.path, name, year, self._tmdb_id(),
+                                self.window.config["tmdb_tag"])
 
             def work():
                 core.ensure_library(root)
@@ -811,6 +816,15 @@ class RipPanel:
     def _show_error(self, message):
         self.status_label.set_text(message)
         self._update_preview()
+
+
+# Style, dropdown label, and the example shown under it.
+TMDB_TAG_CHOICES = (
+    (core.TMDB_TAG_NONE, "None", "Ghost (1990)/Ghost (1990).mkv"),
+    (core.TMDB_TAG_FOLDER, "Folder", "Ghost (1990) [tmdbid-251]/Ghost (1990).mkv"),
+    (core.TMDB_TAG_FOLDER_AND_FILE, "Folder and file",
+     "Ghost (1990) [tmdbid-251]/Ghost (1990) [tmdbid-251].mkv"),
+)
 
 
 class SettingsDialog(Adw.PreferencesDialog):
@@ -854,6 +868,22 @@ class SettingsDialog(Adw.PreferencesDialog):
         appearance.add(self.system_theme_row)
         page.add(appearance)
 
+        naming = Adw.PreferencesGroup(
+            title="Naming",
+            description="The tag makes Jellyfin use the exact TMDb entry. Without it, Jellyfin "
+                        "matches on the name and year. Episode files are never tagged, and "
+                        "files already in a library are not renamed.")
+        self.tmdb_tag_row = Adw.ComboRow(
+            title="TMDb ID tag",
+            model=Gtk.StringList.new([label for _style, label, _example in TMDB_TAG_CHOICES]))
+        self.tmdb_tag_row.connect("notify::selected", self._show_tag_example)
+        styles = [style for style, _label, _example in TMDB_TAG_CHOICES]
+        if config["tmdb_tag"] in styles:
+            self.tmdb_tag_row.set_selected(styles.index(config["tmdb_tag"]))
+        self._show_tag_example()
+        naming.add(self.tmdb_tag_row)
+        page.add(naming)
+
         folders = Adw.PreferencesGroup(title="Folders")
         self.rip_row = Adw.EntryRow(title="Rip folder (MakeMKV destination)", text=config["rip_dir"])
         folders.add(self.rip_row)
@@ -867,6 +897,9 @@ class SettingsDialog(Adw.PreferencesDialog):
 
         self.connect("closed", self._save)
 
+    def _show_tag_example(self, *_):
+        self.tmdb_tag_row.set_subtitle(TMDB_TAG_CHOICES[self.tmdb_tag_row.get_selected()][2])
+
     def _save(self, _dialog):
         config = self.window.config
         config["tmdb_api_key"] = self.key_row.get_text().strip()
@@ -875,6 +908,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         config["eject_when_finished"] = self.eject_row.get_active()
         config["start_at_login"] = self.login_row.get_active()
         config["use_system_theme"] = self.system_theme_row.get_active()
+        previous_tag = config["tmdb_tag"]
+        config["tmdb_tag"] = TMDB_TAG_CHOICES[self.tmdb_tag_row.get_selected()][0]
         for key, row in self.library_rows.items():
             config["libraries"][key] = row.get_text().strip()
         try:
@@ -884,6 +919,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         sync_desktop_entries(config["start_at_login"])
         self.window.get_application().theme.apply(config["use_system_theme"])
         self.window.apply_config()
+        if config["tmdb_tag"] != previous_tag:
+            self.window.refresh_destinations()
 
 
 class MonitorCard:
@@ -1156,6 +1193,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._check_makemkv_folder()
         self.scan()
 
+    def refresh_destinations(self):
+        """Open rips show where they will go, which depends on the naming setting."""
+        for panel in self.panels.values():
+            panel.refresh_target()
+
     def _check_makemkv_folder(self):
         """A different MakeMKV destination means rips would never be listed."""
         destination = monitor.read_makemkv_settings().get("app_DestinationDir")
@@ -1318,6 +1360,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.autofiling.add(folder)
         label = str(folder.relative_to(self.config["rip_dir"]))
         tmdb, library = self.tmdb, Path(self.config["libraries"]["movies"])
+        tmdb_tag = self.config["tmdb_tag"]
         if panel:
             panel.update_rip(panel.rip)
 
@@ -1325,7 +1368,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.autofiling.discard(folder)
             self._on_auto_filed(folder, result, error)
 
-        run_in_background(lambda: core.auto_file_film(folder, label, tmdb, library), done)
+        run_in_background(lambda: core.auto_file_film(folder, label, tmdb, library, tmdb_tag), done)
 
     def _on_auto_filed(self, folder, result, error):
         if error:

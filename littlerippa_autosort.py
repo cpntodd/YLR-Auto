@@ -72,6 +72,7 @@ DISC_PATTERN = re.compile(r"(?:\b|(?<=\d))(?:D|DISC|DISK) ?(\d{1,2})\b", re.IGNO
 YEAR_PATTERN = re.compile(r"\s*\((\d{4})\)$")
 # Jellyfin provider ID tags in folder names, e.g. "[tmdbid-251]" or "{tmdb-251}".
 PROVIDER_TAG_PATTERN = re.compile(r"\s*[\[({](?:tmdb|tvdb|imdb)(?:id)?-[^\])}]+[\])}]", re.IGNORECASE)
+TMDB_TAG_PATTERN = re.compile(r"[\[({]tmdb(?:id)?-(\d+)[\])}]", re.IGNORECASE)
 EPISODE_FILE_PATTERN = re.compile(r"S\d+E(\d+)|^Episode (\d+)\b", re.IGNORECASE)
 MAKEMKV_TITLE_NUMBER = re.compile(r"_t(\d+)\.mkv$", re.IGNORECASE)
 # Characters Windows and SMB shares reject in file names.
@@ -408,11 +409,26 @@ def with_year(title, year):
     return safe_filename(f"{title} ({year})" if year else title)
 
 
+# Where the "[tmdbid-N]" tag goes. Episode files never carry it, so for a series
+# both tagged styles tag the show folder only.
+TMDB_TAG_NONE = "none"
+TMDB_TAG_FOLDER = "folder"
+TMDB_TAG_FOLDER_AND_FILE = "folder_and_file"
+
+
 def library_name(title, year, tmdb_id=None):
-    """Jellyfin's folder form, "Name (Year) [tmdbid-123]". The ID tag makes
+    """Jellyfin's tagged form, "Name (Year) [tmdbid-123]". The ID tag makes
     Jellyfin use that exact TMDb entry instead of guessing from the name."""
     name = with_year(title, year)
     return f"{name} [tmdbid-{tmdb_id}]" if tmdb_id else name
+
+
+def library_folder_name(title, year, tmdb_id, tmdb_tag):
+    """The folder name under the chosen tag style. An unknown style, such as
+    one from a hand-edited config, gets the plain name."""
+    if tmdb_tag in (TMDB_TAG_FOLDER, TMDB_TAG_FOLDER_AND_FILE):
+        return library_name(title, year, tmdb_id)
+    return with_year(title, year)
 
 
 def existing_video(directory, stem):
@@ -433,10 +449,10 @@ def _comparable(name):
     return re.sub(r"[^a-z0-9]+", "", name)
 
 
-def find_show_dir(tv_library, title, year, tmdb_id=None):
+def find_show_dir(tv_library, title, year, tmdb_id=None, tmdb_tag=TMDB_TAG_NONE):
     """The library folder for a show, reusing one that already exists under
     a slightly different name so a show is never split across two folders."""
-    wanted = tv_library / library_name(title, year, tmdb_id)
+    wanted = tv_library / library_folder_name(title, year, tmdb_id, tmdb_tag)
     if wanted.is_dir():
         return wanted
     key = _comparable(title)
@@ -506,6 +522,7 @@ class MovieJob:
     title: str
     year: int | None
     tmdb_id: int | None = None
+    tmdb_tag: str = TMDB_TAG_NONE
 
 
 @dataclass(frozen=True)
@@ -537,9 +554,10 @@ def ensure_library(library_dir):
     library_dir.mkdir()
 
 
-def movie_destination(library_dir, title, year, tmdb_id=None):
-    name = library_name(title, year, tmdb_id)
-    return library_dir / name / (name + ".mkv")
+def movie_destination(library_dir, title, year, tmdb_id=None, tmdb_tag=TMDB_TAG_NONE):
+    folder_name = library_folder_name(title, year, tmdb_id, tmdb_tag)
+    stem = folder_name if tmdb_tag == TMDB_TAG_FOLDER_AND_FILE else with_year(title, year)
+    return library_dir / folder_name / (stem + ".mkv")
 
 
 def move_file(src, dest):
@@ -555,17 +573,32 @@ def move_file(src, dest):
     os.remove(src)
 
 
+def _names_another_film(folder_name, tmdb_id):
+    """True when the folder's TMDb tag differs from the film being filed."""
+    tag = TMDB_TAG_PATTERN.search(folder_name)
+    return bool(tag and tmdb_id and int(tag.group(1)) != tmdb_id)
+
+
 def _movie_copies(library_dir, title, year, tmdb_id=None):
-    """Library files already holding a movie of this name: the tagged
-    "Title (Year) [tmdbid-N]" form, then "Title (Year)", then the older
-    yearless "Title" form."""
-    names = [library_name(title, year, tmdb_id), with_year(title, year), safe_filename(title)]
-    names = list(dict.fromkeys(names))  # drop repeats, keep order
+    """Library files already holding a movie of this name: "Title (Year)" with
+    or without an ID tag on the folder or file, then the older yearless "Title".
+
+    This looks at every folder rather than the name a new rip would get, so
+    changing the tag setting, or filing without a TMDb match, cannot miss a copy
+    filed under another style and put a second one beside it.
+    """
+    if not library_dir.is_dir():
+        return []
+    folders = [folder for folder in sorted(library_dir.iterdir()) if folder.is_dir()]
     copies = []
-    for name in names:
-        path = existing_video(library_dir / name, name)
-        if path:
-            copies.append(path)
+    for name in dict.fromkeys((with_year(title, year), safe_filename(title))):
+        for folder in folders:
+            if PROVIDER_TAG_PATTERN.sub("", folder.name) != name or \
+                    _names_another_film(folder.name, tmdb_id):
+                continue
+            path = existing_video(folder, folder.name) or existing_video(folder, name)
+            if path:
+                copies.append(path)
     return copies
 
 
@@ -581,7 +614,7 @@ def file_movie(job, library_dir, allow_duplicate_handling=True):
     Unattended callers pass allow_duplicate_handling=False, so any existing
     copy raises NeedsAttention and nothing is deleted without a person.
     """
-    dest = movie_destination(library_dir, job.title, job.year, job.tmdb_id)
+    dest = movie_destination(library_dir, job.title, job.year, job.tmdb_id, job.tmdb_tag)
     ripped = video_duration(job.main)
 
     for existing in _movie_copies(library_dir, job.title, job.year, job.tmdb_id):
@@ -684,7 +717,7 @@ def _runtime_confirmed_matches(tmdb, guess, runtime_seconds):
     return named, confirmed
 
 
-def auto_file_film(folder, label, tmdb, library_dir):
+def auto_file_film(folder, label, tmdb, library_dir, tmdb_tag=TMDB_TAG_NONE):
     """File a finished rip only when it is unambiguously one known film.
 
     A name match alone is not enough, because labels are short and remakes
@@ -712,7 +745,7 @@ def auto_file_film(folder, label, tmdb, library_dir):
         return AutoDeclined(f"{len(confirmed)} TMDb films match the name and runtime", guess)
     match = confirmed[0]
 
-    job = MovieJob(folder, main.path, match.title, match.year, match.tmdb_id)
+    job = MovieJob(folder, main.path, match.title, match.year, match.tmdb_id, tmdb_tag)
     try:
         ensure_library(library_dir)
         destination = file_movie(job, library_dir, allow_duplicate_handling=False)
