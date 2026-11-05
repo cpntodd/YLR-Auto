@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 log = logging.getLogger("littlerippa-autosort")
 

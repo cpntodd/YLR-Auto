@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 (2026-11-06)
 
 - Name films `Name (Year)` by default, without the `[tmdbid-N]` tag.
 - Add a TMDb ID tag setting: none, folder, or folder and file.
