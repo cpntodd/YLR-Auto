@@ -25,6 +25,7 @@ MODULES = ("littlerippa_autosort.py", "littlerippa_autosort_gui.py",
            "littlerippa_monitor.py", "littlerippa_tray.py")
 MULTIARCH = Path("/usr/lib/x86_64-linux-gnu")
 PYTHON = "python3.13"
+ICON_PIXELS = 256
 
 # Loaded by dlopen, so following ldd alone would miss them: typelibs name their
 # library at runtime, and glibc loads libgcc_s to cancel threads.
@@ -124,6 +125,16 @@ def install_data(usr):
     (usr / "lib/gio/modules").mkdir(parents=True)
 
 
+def render_icon(svg, png):
+    """appimagetool makes .DirIcon from this file, and requires it to be a PNG.
+    Imported here because only this step needs GdkPixbuf on the build system."""
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(svg), ICON_PIXELS, ICON_PIXELS)
+    pixbuf.savev(str(png), "png", [], [])
+
+
 def install_app(appdir):
     usr = appdir / "usr"
     app = usr / "lib/ylr-auto"
@@ -133,8 +144,7 @@ def install_app(appdir):
     packaging = ROOT / "packaging"
     shutil.copy2(packaging / "AppRun", appdir / "AppRun")
     shutil.copy2(packaging / f"{APP_ID}.desktop", appdir)
-    shutil.copy2(packaging / f"{APP_ID}.svg", appdir)
-    (appdir / ".DirIcon").symlink_to(f"{APP_ID}.svg")
+    render_icon(packaging / f"{APP_ID}.svg", appdir / f"{APP_ID}.png")
     icons = usr / "share/icons/hicolor/scalable/apps"
     icons.mkdir(parents=True, exist_ok=True)
     shutil.copy2(packaging / f"{APP_ID}.svg", icons)
@@ -190,7 +200,7 @@ def main():
     output = ROOT / "dist" / f"YLR-Auto-{project_version()}-x86_64.AppImage"
     output.parent.mkdir(exist_ok=True)
     subprocess.run([sys.argv[1], "--no-appstream", str(appdir), str(output)], check=True,
-                   env={"ARCH": "x86_64", "PATH": "/usr/bin:/bin"})
+                   env={"ARCH": "x86_64", "PATH": "/usr/bin:/bin", "APPIMAGE_EXTRACT_AND_RUN": "1"})
     print(output)
 
 

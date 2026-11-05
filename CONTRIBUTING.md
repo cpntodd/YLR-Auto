@@ -37,5 +37,6 @@ Without a path, you can test the unpacked bundle with `build/AppDir/AppRun`.
 
 ## Make a release
 
-Update `VERSION` in `littlerippa_autosort.py`, the release list in
-`packaging/io.github.cpntodd.YLRAuto.metainfo.xml` and `CHANGELOG.md`.
+Update `VERSION` in `littlerippa_autosort.py`, the version in `packaging/ylr-auto.1`,
+the release list in `packaging/io.github.cpntodd.YLRAuto.metainfo.xml`,
+`packaging/changelog.Debian` and `CHANGELOG.md`.

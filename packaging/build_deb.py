@@ -8,6 +8,7 @@ with the APIs the app uses: GTK 4.12 for CssProvider.load_from_string, libadwait
 """
 
 import gzip
+import hashlib
 import re
 import shutil
 import subprocess
@@ -74,6 +75,24 @@ def write(destination, text, mode=0o644):
     destination.chmod(mode)
 
 
+def install_gzipped(source, destination):
+    """mtime=0 and no stored name keep the archive reproducible, as Debian requires."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with open(destination, "wb") as raw:
+        with gzip.GzipFile(filename="", fileobj=raw, mode="wb", compresslevel=9, mtime=0) as packed:
+            packed.write(source.read_bytes())
+    destination.chmod(0o644)
+
+
+def write_md5sums(tree):
+    """Checksums for debsums. Paths are relative to the package root."""
+    lines = []
+    for path in sorted(p for p in tree.rglob("*") if p.is_file() and "DEBIAN" not in p.parts):
+        digest = hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
+        lines.append(f"{digest}  {path.relative_to(tree)}\n")
+    write(tree / "DEBIAN/md5sums", "".join(lines))
+
+
 def build_tree(tree):
     for module in MODULES:
         install(ROOT / module, tree / "usr/lib/ylr-auto" / module)
@@ -87,15 +106,15 @@ def build_tree(tree):
     license_text = "\n".join(f" {line}" if line else " ." for line in license_lines)
     documents = tree / "usr/share/doc/ylr-auto"
     write(documents / "copyright", COPYRIGHT.format(license=license_text))
-    # mtime=0 keeps the archive reproducible.
-    with open(documents / "changelog.gz", "wb") as raw:
-        with gzip.GzipFile(filename="", fileobj=raw, mode="wb", compresslevel=9, mtime=0) as packed:
-            packed.write((ROOT / "CHANGELOG.md").read_bytes())
-    (documents / "changelog.gz").chmod(0o644)
+    install_gzipped(packaging / "changelog.Debian", documents / "changelog.gz")
+    install_gzipped(packaging / "ylr-auto.1", tree / "usr/share/man/man1/ylr-auto.1.gz")
 
 
 def main():
     version = project_version()
+    changelog_head = (ROOT / "packaging/changelog.Debian").read_text().splitlines()[0]
+    if f"({version})" not in changelog_head:
+        raise SystemExit(f"Add a {version} entry to packaging/changelog.Debian before building.")
     tree = ROOT / "build" / "deb"
     shutil.rmtree(tree, ignore_errors=True)
     build_tree(tree)
@@ -104,6 +123,7 @@ def main():
         directory.chmod(0o755)
     installed_bytes = sum(path.stat().st_size for path in tree.rglob("*") if path.is_file())
     write(tree / "DEBIAN/control", control_text(version, max(1, installed_bytes // 1024)))
+    write_md5sums(tree)
     (tree / "DEBIAN").chmod(0o755)
 
     output = ROOT / "dist" / f"ylr-auto_{version}_all.deb"

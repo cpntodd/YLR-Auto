@@ -1,0 +1,44 @@
+.TH YLR-AUTO 1 "November 2026" "YLR-Auto 1.0.0" "User Commands"
+.SH NAME
+ylr-auto \- companion for MakeMKV that files finished rips into Jellyfin
+.SH SYNOPSIS
+.B ylr-auto
+.RB [ \-\-background ]
+.br
+.B ylr-auto
+.B \-\-version
+.SH DESCRIPTION
+.B ylr-auto
+shows what MakeMKV and each optical drive are doing, then files finished rips
+into Jellyfin libraries using names and posters from TMDb. Films that match
+exactly one TMDb entry by name and runtime can be filed automatically, and
+anything uncertain waits for you. MakeMKV is a separate program and is not
+included.
+.PP
+Closing the window keeps the program monitoring from the tray. Use the tray
+menu to quit.
+.SH OPTIONS
+.TP
+.B \-\-background
+Start in the tray with no window. Login startup uses this.
+.TP
+.B \-\-version
+Print the version and exit.
+.SH ENVIRONMENT
+.TP
+.B TMDB_API_KEY
+TMDb API key or read access token. Overrides the saved key.
+.SH FILES
+.TP
+.I ~/.config/littlerippa\-autosort/config.json
+Settings, including the TMDb key. Readable by the owner only.
+.TP
+.I ~/.local/state/littlerippa\-autosort/autosort.log
+Record of rips and file moves.
+.TP
+.I ~/.cache/littlerippa\-autosort/posters
+Cached TMDb posters.
+.SH SEE ALSO
+.BR makemkvcon (1)
+.PP
+https://github.com/cpntodd/YLR\-Auto
