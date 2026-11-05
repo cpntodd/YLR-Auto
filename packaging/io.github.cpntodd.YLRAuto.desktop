@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=YLR-Auto
+Comment=Watch MakeMKV and file finished rips into Jellyfin
+Exec=ylr-auto
+Icon=io.github.cpntodd.YLRAuto
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=MakeMKV;Jellyfin;TMDb;rip;DVD;Blu-ray;
+StartupNotify=true

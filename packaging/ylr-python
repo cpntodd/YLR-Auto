@@ -1,0 +1,60 @@
+#!/bin/sh
+# Starts the AppImage's Python with its bundled loader and libraries.
+#
+# The loader takes the library path as an argument instead of LD_LIBRARY_PATH,
+# so programs started from the app (MakeMKV, eject, a browser) never inherit the
+# bundled libraries. Variables below are saved first, because the app restores
+# them when it starts host programs (see host_environment in littlerippa_monitor.py).
+set -e
+HERE=$(dirname "$(readlink -f "$0")")
+APPDIR=$(dirname "$(dirname "$HERE")")
+export APPDIR
+USR="$APPDIR/usr"
+
+set_bundled() {
+    if [ -z "$YLR_AUTO_ENV_READY" ]; then
+        eval "saved=\${$1-__unset__}"
+        export "YLR_AUTO_HOST_$1=$saved"
+    fi
+    export "$1=$2"
+}
+
+# Cairo rendering with GL disabled means the host's GPU drivers are never loaded.
+# Those drivers need the host's libraries, which may not match the bundled ones.
+set_bundled GSK_RENDERER cairo
+set_bundled GDK_DISABLE gl,vulkan
+set_bundled GI_TYPELIB_PATH "$USR/lib/girepository-1.0"
+set_bundled GSETTINGS_SCHEMA_DIR "$USR/share/glib-2.0/schemas"
+set_bundled GIO_MODULE_DIR "$USR/lib/gio/modules"
+set_bundled GTK_EXE_PREFIX "$USR"
+set_bundled GTK_DATA_PREFIX "$USR"
+set_bundled PYTHONNOUSERSITE 1
+set_bundled PYTHONDONTWRITEBYTECODE 1
+if [ -z "$YLR_AUTO_ENV_READY" ]; then
+    set_bundled XDG_DATA_DIRS "$USR/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+    # The loader cache needs absolute paths, and the mount point changes per run.
+    cache_dir=${XDG_RUNTIME_DIR:-$(mktemp -d)}
+    cache="$cache_dir/ylr-auto-pixbuf-loaders.cache"
+    sed "s|@LOADER_DIR@|$USR/lib/gdk-pixbuf-2.0/loaders|g" \
+        "$USR/lib/gdk-pixbuf-2.0/loaders.cache.in" > "$cache"
+    set_bundled GDK_PIXBUF_MODULE_FILE "$cache"
+
+    # The bundled OpenSSL looks for certificates in a Debian path, which other
+    # distributions lack. A bundled copy is the fallback on an unusual host.
+    certificates="$USR/share/ca-certificates-bundle.crt"
+    for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+                     /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem; do
+        if [ -r "$candidate" ]; then
+            certificates=$candidate
+            break
+        fi
+    done
+    set_bundled SSL_CERT_FILE "$certificates"
+
+    export YLR_AUTO_PYTHON="$USR/bin/ylr-python"
+    export YLR_AUTO_ENV_READY=1
+fi
+
+exec "$USR/lib/bundled/ld-linux-x86-64.so.2" --library-path "$USR/lib/bundled" \
+    --argv0 "$USR/bin/python3" "$USR/bin/python3.13" "$@"

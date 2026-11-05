@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.cpntodd.YLRAuto</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>YLR-Auto</name>
+  <summary>Watch MakeMKV and file finished rips into Jellyfin</summary>
+  <description>
+    <p>A companion for MakeMKV. It shows what MakeMKV and each optical drive are doing, then files finished rips into Jellyfin libraries using names from TMDb.</p>
+    <p>Films that match exactly one TMDb entry by name and runtime can be filed automatically. Anything uncertain waits for you, and unattended filing never deletes a file.</p>
+  </description>
+  <launchable type="desktop-id">io.github.cpntodd.YLRAuto.desktop</launchable>
+  <url type="homepage">https://github.com/cpntodd/YLR-Auto</url>
+  <url type="bugtracker">https://github.com/cpntodd/YLR-Auto/issues</url>
+  <developer id="io.github.cpntodd">
+    <name>cpntodd</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-11-05"/>
+  </releases>
+</component>

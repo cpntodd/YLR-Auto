@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Build the AppImage folder, and pack it when given appimagetool.
+
+    python3 packaging/build_appimage.py [path/to/appimagetool]
+
+Run on Debian 13 with the app's runtime dependencies installed, because the
+bundle is copied from this system. Libraries are found by following ldd from a
+list of starting points. That is smaller than unpacking the 375 packages apt
+reports, which include init systems and fonts the app never loads.
+
+The tool is never downloaded here, so a build only runs what you chose to install.
+Without one, build/AppDir is left ready to test or pack.
+"""
+
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+APP_ID = "io.github.cpntodd.YLRAuto"
+MODULES = ("littlerippa_autosort.py", "littlerippa_autosort_gui.py",
+           "littlerippa_monitor.py", "littlerippa_tray.py")
+MULTIARCH = Path("/usr/lib/x86_64-linux-gnu")
+PYTHON = "python3.13"
+
+# Loaded by dlopen, so following ldd alone would miss them: typelibs name their
+# library at runtime, and glibc loads libgcc_s to cancel threads.
+SEED_LIBRARIES = ("libgtk-4.so.1", "libadwaita-1.so.0", "libgtk-3.so.0", "libgdk-3.so.0",
+                  "libxapp.so.1", "libgirepository-1.0.so.1", "libgirepository-2.0.so.0",
+                  "libgraphene-1.0.so.0", "libgdk_pixbuf-2.0.so.0", "libpango-1.0.so.0",
+                  "libpangocairo-1.0.so.0", "libharfbuzz.so.0", "libatk-1.0.so.0",
+                  "libgcc_s.so.1", "libnss_dns.so.2", "libnss_files.so.2", "libresolv.so.2",
+                  "librsvg-2.so.2")
+TYPELIB_PREFIXES = ("Adw-1", "Atk-1", "cairo-1", "DBus", "DBusGLib", "Gdk-3", "Gdk-4", "GdkPixbuf-",
+                    "GdkPixdata-", "GdkWayland-4", "GdkX11-3", "GdkX11-4", "Gio", "GIRepository-",
+                    "GL-1", "GLib-", "GModule-", "GObject-", "Graphene-1", "Gsk-4", "Gtk-3", "Gtk-4",
+                    "HarfBuzz-", "Pango-", "PangoCairo-", "PangoFc-", "PangoFT2-", "PangoOT-",
+                    "PangoXft-", "Rsvg-", "XApp-", "fontconfig-", "freetype2-", "win32-",
+                    "xfixes-", "xft-", "xlib-", "xrandr-")
+SKIPPED_STDLIB = ("test", "idlelib", "tkinter", "turtledemo", "ensurepip", "lib2to3", "pydoc_data")
+
+
+def project_version():
+    source = (ROOT / "littlerippa_autosort.py").read_text()
+    return re.search(r'^VERSION = "(.+)"$', source, re.MULTILINE).group(1)
+
+
+def linked_libraries(path):
+    """Absolute paths of the libraries an ELF file needs on this system."""
+    result = subprocess.run(["ldd", str(path)], capture_output=True, text=True, check=False)
+    return [Path(match.group(1)) for match in re.finditer(r"=> (/\S+)", result.stdout)]
+
+
+def is_elf(path):
+    with open(path, "rb") as f:
+        return f.read(4) == b"\x7fELF"
+
+
+def collect_libraries(elf_files, bundled):
+    """Copy the closure of elf_files into bundled, by library file name."""
+    pending = list(elf_files)
+    seen = set()
+    while pending:
+        current = pending.pop()
+        for library in linked_libraries(current):
+            if library.name in seen:
+                continue
+            seen.add(library.name)
+            shutil.copy2(library.resolve(), bundled / library.name)
+            pending.append(library)
+
+
+def copy_tree(source, destination, skip=()):
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*skip, "__pycache__"),
+                    symlinks=False, dirs_exist_ok=True)
+
+
+def install_python(usr):
+    shutil.copy2(f"/usr/bin/{PYTHON}", usr / "bin" / PYTHON)
+    copy_tree(f"/usr/lib/{PYTHON}", usr / "lib" / PYTHON, skip=SKIPPED_STDLIB)
+    packages = usr / "lib/python3/dist-packages"
+    packages.mkdir(parents=True)
+    copy_tree("/usr/lib/python3/dist-packages/gi", packages / "gi")
+    copy_tree("/usr/lib/python3/dist-packages/cairo", packages / "cairo")
+    shutil.copy2(ROOT / "packaging/ylr-python", usr / "bin/ylr-python")
+    # getpath finds the prefix from this name, passed to the loader as argv0.
+    (usr / "bin/python3").symlink_to(PYTHON)
+
+
+def install_introspection(usr):
+    typelibs = usr / "lib/girepository-1.0"
+    typelibs.mkdir(parents=True)
+    for typelib in (MULTIARCH / "girepository-1.0").glob("*.typelib"):
+        if typelib.name.startswith(TYPELIB_PREFIXES):
+            shutil.copy2(typelib, typelibs)
+
+
+def install_pixbuf_loaders(usr):
+    """Keep the loaders and a cache template; ylr-python fills in the mount point."""
+    pixbuf_root = MULTIARCH / "gdk-pixbuf-2.0"
+    host_loader_dir = next(pixbuf_root.glob("2.*/loaders"))
+    loaders = usr / "lib/gdk-pixbuf-2.0/loaders"
+    copy_tree(host_loader_dir, loaders)
+    query = pixbuf_root / "gdk-pixbuf-query-loaders"
+    cache = subprocess.run([str(query)], capture_output=True, text=True, check=True).stdout
+    template = cache.replace(str(host_loader_dir), "@LOADER_DIR@")
+    (usr / "lib/gdk-pixbuf-2.0/loaders.cache.in").write_text(template)
+
+
+def install_data(usr):
+    share = usr / "share"
+    for theme in ("Adwaita", "hicolor"):
+        copy_tree(f"/usr/share/icons/{theme}", share / "icons" / theme)
+    copy_tree("/usr/share/mime", share / "mime")
+    schemas = share / "glib-2.0/schemas"
+    schemas.mkdir(parents=True)
+    for schema in Path("/usr/share/glib-2.0/schemas").glob("org.gtk.*.gschema.xml"):
+        shutil.copy2(schema, schemas)
+    subprocess.run(["glib-compile-schemas", str(schemas)], check=True)
+    shutil.copy2("/etc/ssl/certs/ca-certificates.crt", share / "ca-certificates-bundle.crt")
+    (usr / "lib/gio/modules").mkdir(parents=True)
+
+
+def install_app(appdir):
+    usr = appdir / "usr"
+    app = usr / "lib/ylr-auto"
+    app.mkdir(parents=True)
+    for module in MODULES:
+        shutil.copy2(ROOT / module, app)
+    packaging = ROOT / "packaging"
+    shutil.copy2(packaging / "AppRun", appdir / "AppRun")
+    shutil.copy2(packaging / f"{APP_ID}.desktop", appdir)
+    shutil.copy2(packaging / f"{APP_ID}.svg", appdir)
+    (appdir / ".DirIcon").symlink_to(f"{APP_ID}.svg")
+    icons = usr / "share/icons/hicolor/scalable/apps"
+    icons.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(packaging / f"{APP_ID}.svg", icons)
+    applications = usr / "share/applications"
+    applications.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(packaging / f"{APP_ID}.desktop", applications)
+    metainfo = usr / "share/metainfo"
+    metainfo.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(packaging / f"{APP_ID}.metainfo.xml", metainfo)
+
+
+def bundle_libraries(usr):
+    bundled = usr / "lib/bundled"
+    bundled.mkdir(parents=True)
+    # The loader must be the one matching the bundled libc.
+    shutil.copy2((MULTIARCH / "ld-linux-x86-64.so.2").resolve(), bundled / "ld-linux-x86-64.so.2")
+    seeds = [path for name in SEED_LIBRARIES if (path := MULTIARCH / name).exists()]
+    missing = [name for name in SEED_LIBRARIES if not (MULTIARCH / name).exists()]
+    if missing:
+        print("Not on this system, so not bundled:", ", ".join(missing), file=sys.stderr)
+    for seed in seeds:
+        shutil.copy2(seed.resolve(), bundled / seed.name)
+    bundled_elves = [path for path in usr.rglob("*")
+                     if path.is_file() and not path.is_symlink() and path.parent != bundled
+                     and (path.suffix == ".so" or ".so." in path.name or path.name == PYTHON)
+                     and is_elf(path)]
+    collect_libraries([*seeds, *bundled_elves], bundled)
+
+
+def make_executable(path):
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def main():
+    appdir = ROOT / "build" / "AppDir"
+    shutil.rmtree(appdir, ignore_errors=True)
+    usr = appdir / "usr"
+    (usr / "bin").mkdir(parents=True)
+    (usr / "lib").mkdir()
+
+    install_python(usr)
+    install_introspection(usr)
+    install_pixbuf_loaders(usr)
+    install_data(usr)
+    install_app(appdir)
+    bundle_libraries(usr)
+    make_executable(usr / "bin/ylr-python")
+    make_executable(appdir / "AppRun")
+
+    if len(sys.argv) < 2:
+        print(f"Built {appdir}. Pass the path to appimagetool to pack it.")
+        return
+    output = ROOT / "dist" / f"YLR-Auto-{project_version()}-x86_64.AppImage"
+    output.parent.mkdir(exist_ok=True)
+    subprocess.run([sys.argv[1], "--no-appstream", str(appdir), str(output)], check=True,
+                   env={"ARCH": "x86_64", "PATH": "/usr/bin:/bin"})
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
