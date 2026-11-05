@@ -19,6 +19,8 @@ Download a package from the [releases page](https://github.com/cpntodd/YLR-Auto/
 
     sudo apt install ./ylr-auto_1.0.0_all.deb
 
+Ubuntu 24.04 meets the package's version requirements, but has not been tested.
+
 **Other x86-64 distributions (AppImage)**
 
     chmod +x YLR-Auto-1.0.0-x86_64.AppImage
