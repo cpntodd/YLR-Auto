@@ -1,3 +1,11 @@
+ylr-auto (1.0.2) unstable; urgency=medium
+
+  * Show a larger poster when the pointer rests on one.
+  * Add a button in Settings to clear the poster cache.
+    See CHANGELOG.md in the source repository.
+
+ -- cpntodd <cpntodd@users.noreply.github.com>  Fri, 06 Nov 2026 13:00:00 +0000
+
 ylr-auto (1.0.1) unstable; urgency=medium
 
   * Name films by name and year, with the TMDb ID tag optional.

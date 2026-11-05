@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 (2026-11-06)
 
 - Show a TMDb result's poster at twice the size after the pointer rests on it for
   2 seconds.

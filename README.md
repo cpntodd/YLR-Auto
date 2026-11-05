@@ -17,14 +17,14 @@ Download a package from the [releases page](https://github.com/cpntodd/YLR-Auto/
 
 **Debian 13, Ubuntu 24.04 or newer (.deb)**
 
-    sudo apt install ./ylr-auto_1.0.1_all.deb
+    sudo apt install ./ylr-auto_1.0.2_all.deb
 
 Ubuntu 24.04 meets the package's version requirements, but has not been tested.
 
 **Other x86-64 distributions (AppImage)**
 
-    chmod +x YLR-Auto-1.0.1-x86_64.AppImage
-    ./YLR-Auto-1.0.1-x86_64.AppImage
+    chmod +x YLR-Auto-1.0.2-x86_64.AppImage
+    ./YLR-Auto-1.0.2-x86_64.AppImage
 
 The AppImage bundles Python, GTK and libadwaita, so it needs nothing else
 installed. It has been tested only on Debian 13, and uses software rendering.
