@@ -4,6 +4,7 @@
 
 - Show a TMDb result's poster at twice the size after the pointer rests on it for
   2 seconds.
+- Add a button in Settings to clear the poster cache.
 
 ## 1.0.1 (2026-11-06)
 

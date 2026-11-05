@@ -108,7 +108,7 @@ Select a rip, then:
 2. **Name**: guessed from the disc label. Search TMDb and pick the match, using the
    poster beside each result, or edit the name to use it as typed. Rest the pointer on a
    poster for 2 seconds to see it at twice the size. Posters are cached
-   in `~/.cache/littlerippa-autosort/posters`.
+   in `~/.cache/littlerippa-autosort/posters`, which **Settings, Cache** can clear.
 3. **Titles**: in film layout the largest title is ticked as the main feature. In
    series layout the episode-length titles are ticked and numbered in disc order,
    starting after the highest episode already in the season folder, so disc 2 carries

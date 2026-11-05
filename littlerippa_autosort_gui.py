@@ -976,6 +976,18 @@ class SettingsDialog(Adw.PreferencesDialog):
         naming.add(self.tmdb_tag_row)
         page.add(naming)
 
+        cache = Adw.PreferencesGroup(title="Cache")
+        # Error text can quote a path, which must not be parsed as markup.
+        self.cache_row = Adw.ActionRow(title="TMDb posters", subtitle="Checking...",
+                                       use_markup=False)
+        self.clear_cache_button = Gtk.Button(label="Clear", valign=Gtk.Align.CENTER,
+                                             sensitive=False)
+        self.clear_cache_button.connect("clicked", self._clear_poster_cache)
+        self.cache_row.add_suffix(self.clear_cache_button)
+        cache.add(self.cache_row)
+        page.add(cache)
+        self._show_poster_cache_usage()
+
         folders = Adw.PreferencesGroup(title="Folders")
         self.rip_row = Adw.EntryRow(title="Rip folder (MakeMKV destination)", text=config["rip_dir"])
         folders.add(self.rip_row)
@@ -988,6 +1000,28 @@ class SettingsDialog(Adw.PreferencesDialog):
         page.add(folders)
 
         self.connect("closed", self._save)
+
+    def _show_poster_cache_usage(self):
+        def done(usage, error):
+            if error:
+                self.cache_row.set_subtitle(f"Could not read the cache: {error}")
+                return
+            count, size = usage
+            self.cache_row.set_subtitle(f"{count} saved, {size / 1000:.0f} KB. Posters download "
+                                        f"again when next needed." if count else "Empty")
+            self.clear_cache_button.set_sensitive(count > 0)
+        run_in_background(lambda: core.poster_cache_usage(POSTER_CACHE), done)
+
+    def _clear_poster_cache(self, _button):
+        self.clear_cache_button.set_sensitive(False)
+
+        def done(_result, error):
+            if error:
+                log.warning("Could not clear the poster cache: %s", error)
+                self.cache_row.set_subtitle(f"Could not clear the cache: {error}")
+                return
+            self._show_poster_cache_usage()
+        run_in_background(lambda: core.clear_poster_cache(POSTER_CACHE), done)
 
     def _show_tag_example(self, *_):
         self.tmdb_tag_row.set_subtitle(TMDB_TAG_CHOICES[self.tmdb_tag_row.get_selected()][2])

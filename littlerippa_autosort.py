@@ -899,6 +899,28 @@ def fetch_poster(poster_path, cache_dir):
     return data
 
 
+def poster_cache_usage(cache_dir):
+    """How many files the cache holds, and their total size in bytes. Subfolders
+    are not counted because clear_poster_cache leaves them alone."""
+    files = _poster_cache_files(cache_dir)
+    return len(files), sum(path.stat().st_size for path in files)
+
+
+def clear_poster_cache(cache_dir):
+    """Delete the cached posters. Each one downloads again when next needed. Only
+    plain files directly in the folder are removed, so a cache folder pointed
+    somewhere unexpected cannot lose a whole tree. Raises OSError on failure."""
+    for path in _poster_cache_files(cache_dir):
+        path.unlink(missing_ok=True)
+
+
+def _poster_cache_files(cache_dir):
+    cache_dir = Path(cache_dir)
+    if not cache_dir.is_dir():
+        return []
+    return [path for path in cache_dir.iterdir() if path.is_file() and not path.is_symlink()]
+
+
 def _cache_poster(cached, data):
     """Failing to cache only costs a later download, so it is not an error."""
     partial = cached.with_name(cached.name + ".partial")

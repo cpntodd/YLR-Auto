@@ -661,6 +661,39 @@ class PosterTest(unittest.TestCase):
                 m.fetch_poster("/a.jpg", self.cache)
         self.assertFalse(self.cache.exists())
 
+    def test_cache_usage_counts_files_and_bytes(self):
+        self.cache.mkdir()
+        (self.cache / "a.jpg").write_bytes(b"12345")
+        (self.cache / "b.jpg").write_bytes(b"123")
+        self.assertEqual(m.poster_cache_usage(self.cache), (2, 8))
+
+    def test_missing_cache_is_empty_and_clears_without_error(self):
+        self.assertEqual(m.poster_cache_usage(self.cache), (0, 0))
+        m.clear_poster_cache(self.cache)
+
+    def test_clearing_removes_only_plain_files_in_the_folder(self):
+        outside = Path(self.tmp.name) / "outside.jpg"
+        outside.write_bytes(b"keep")
+        (self.cache / "folder").mkdir(parents=True)
+        (self.cache / "folder" / "nested.jpg").write_bytes(b"keep")
+        (self.cache / "link.jpg").symlink_to(outside)
+        (self.cache / "a.jpg").write_bytes(b"image")
+
+        m.clear_poster_cache(self.cache)
+
+        self.assertFalse((self.cache / "a.jpg").exists())
+        self.assertTrue((self.cache / "folder" / "nested.jpg").exists())
+        self.assertTrue((self.cache / "link.jpg").is_symlink())
+        self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_poster_downloads_again_after_clearing(self):
+        with self.network_returning(b"image") as urlopen:
+            m.fetch_poster("/a1.jpg", self.cache)
+            m.clear_poster_cache(self.cache)
+            urlopen.return_value.__enter__.return_value = io.BytesIO(b"image")
+            self.assertEqual(m.fetch_poster("/a1.jpg", self.cache), b"image")
+        self.assertEqual(urlopen.call_count, 2)
+
     def test_search_results_carry_their_poster(self):
         body = json.dumps({"results": [{"id": 1, "name": "A", "poster_path": "/p.jpg"},
                                        {"id": 2, "name": "B", "poster_path": None}]}).encode()
