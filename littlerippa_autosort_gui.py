@@ -53,6 +53,10 @@ ICON_IDLE = "media-optical-symbolic"
 ICON_RIPPING = "media-record-symbolic"
 # Gtk.Image fits a poster inside a square of this size, keeping its shape.
 POSTER_DISPLAY_PIXELS = 60
+# Twice the thumbnail, still within the 92x138 image TMDb supplies, so the preview
+# needs no second download.
+POSTER_PREVIEW_PIXELS = POSTER_DISPLAY_PIXELS * 2
+POSTER_PREVIEW_DELAY_MS = 2000
 POSTER_PLACEHOLDER_PIXELS = 32
 POSTER_PLACEHOLDER_ICON = "video-x-generic-symbolic"
 # VSCodium's Dark+ palette, mapped onto libadwaita's colour variables so every
@@ -300,6 +304,92 @@ def labelled(text, widget):
     box.append(Gtk.Label(label=text, xalign=0))
     box.append(widget)
     return box
+
+
+class PosterPreviewImage(Gtk.Widget):
+    """A paintable drawn at an exact size. Gtk.Image always reserves a square, which
+    would leave bars beside a portrait poster, and Gtk.Picture asks for the image's
+    own 92x138 pixels."""
+
+    def __init__(self):
+        super().__init__()
+        self.paintable = None
+        self.size = (0, 0)
+
+    def set_paintable(self, paintable, width, height):
+        self.paintable = paintable
+        self.size = (round(width), round(height))
+        self.queue_resize()
+
+    def do_measure(self, orientation, _for_size):
+        length = self.size[0 if orientation == Gtk.Orientation.HORIZONTAL else 1]
+        return length, length, -1, -1
+
+    def do_snapshot(self, snapshot):
+        if self.paintable:
+            self.paintable.snapshot(snapshot, self.get_width(), self.get_height())
+
+
+def fitted_poster_size(texture, box_pixels):
+    """The width and height of a poster fitted inside a square, keeping its shape."""
+    aspect = texture.get_intrinsic_aspect_ratio()
+    return box_pixels * min(1, aspect), box_pixels * min(1, 1 / aspect)
+
+
+class PosterPreview:
+    """Shows a poster at twice its size once the pointer has rested on it.
+
+    The thumbnail's widget is a square wider than a portrait poster, so the pointer
+    position is checked against the drawn image, not the widget. The popover sits
+    beside the thumbnail and never takes focus, so it cannot cover the pointer and
+    flicker, or take keyboard input from the search box.
+    """
+
+    def __init__(self, thumbnail):
+        self.thumbnail = thumbnail
+        self.texture = None
+        self.delay_source = None
+        self.image = PosterPreviewImage()
+        self.popover = Gtk.Popover(child=self.image, autohide=False, has_arrow=False,
+                                   position=Gtk.PositionType.RIGHT, can_focus=False)
+        self.popover.set_parent(thumbnail)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", self._on_pointer)
+        motion.connect("motion", self._on_pointer)
+        motion.connect("leave", lambda _controller: self._hide())
+        thumbnail.add_controller(motion)
+        # A new search removes the row under a resting pointer without a "leave".
+        thumbnail.connect("unmap", lambda _widget: self._hide())
+        thumbnail.connect("destroy", lambda _widget: self.popover.unparent())
+
+    def set_texture(self, texture):
+        self.texture = texture
+        self.image.set_paintable(texture, *fitted_poster_size(texture, POSTER_PREVIEW_PIXELS))
+
+    def _pointer_is_on_poster(self, x, y):
+        if self.texture is None:
+            return False
+        drawn_width, drawn_height = fitted_poster_size(self.texture, POSTER_DISPLAY_PIXELS)
+        return (abs(x - self.thumbnail.get_width() / 2) <= drawn_width / 2
+                and abs(y - self.thumbnail.get_height() / 2) <= drawn_height / 2)
+
+    def _on_pointer(self, _controller, x, y):
+        if not self._pointer_is_on_poster(x, y):
+            self._hide()
+        elif self.delay_source is None and not self.popover.get_visible():
+            self.delay_source = GLib.timeout_add(POSTER_PREVIEW_DELAY_MS, self._on_delay_over)
+
+    def _on_delay_over(self):
+        self.delay_source = None
+        self.popover.popup()
+        return GLib.SOURCE_REMOVE
+
+    def _hide(self):
+        if self.delay_source is not None:
+            GLib.source_remove(self.delay_source)
+            self.delay_source = None
+        self.popover.popdown()
 
 
 @dataclass
@@ -638,6 +728,7 @@ class RipPanel:
         image.update_property([Gtk.AccessibleProperty.LABEL], [f"Poster for {match.title}"])
         if not match.poster_path:
             return image
+        preview = PosterPreview(image)
 
         def done(data, error):
             if error:
@@ -650,6 +741,7 @@ class RipPanel:
                 return
             image.set_from_paintable(texture)
             image.set_pixel_size(POSTER_DISPLAY_PIXELS)
+            preview.set_texture(texture)
 
         run_in_background(lambda: core.fetch_poster(match.poster_path, POSTER_CACHE), done)
         return image

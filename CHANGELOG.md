@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Show a TMDb result's poster at twice the size after the pointer rests on it for
+  2 seconds.
+
 ## 1.0.1 (2026-11-06)
 
 - Name films `Name (Year)` by default, without the `[tmdbid-N]` tag.

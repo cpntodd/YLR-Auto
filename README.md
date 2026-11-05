@@ -106,7 +106,8 @@ Select a rip, then:
 
    Labels such as `ANGEL_S1_D2` or `Angel/S1` default to Shows, season 1.
 2. **Name**: guessed from the disc label. Search TMDb and pick the match, using the
-   poster beside each result, or edit the name to use it as typed. Posters are cached
+   poster beside each result, or edit the name to use it as typed. Rest the pointer on a
+   poster for 2 seconds to see it at twice the size. Posters are cached
    in `~/.cache/littlerippa-autosort/posters`.
 3. **Titles**: in film layout the largest title is ticked as the main feature. In
    series layout the episode-length titles are ticked and numbered in disc order,
