@@ -37,6 +37,9 @@ the path to [appimagetool](https://github.com/AppImage/appimagetool):
 
     python3 packaging/build_appimage.py /path/to/appimagetool
 
+Packing also needs `zsyncmake`, from the `zsync` package. Publish the `.zsync` file it
+writes next to the AppImage in the release, because AppImageUpdate reads it.
+
 Without a path, you can test the unpacked bundle with `build/AppDir/AppRun`.
 
 ## Make a release

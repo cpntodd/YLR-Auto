@@ -23,7 +23,11 @@ ROOT = Path(__file__).resolve().parent.parent
 APP_ID = "io.github.cpntodd.YLRAuto"
 LOGO_VIDEO = "oddly_cartouche.webm"
 MULTIARCH = Path("/usr/lib/x86_64-linux-gnu")
+TOOL_PATH = "/usr/bin:/bin"
 ICON_PIXELS = 256
+# Tells AppImageUpdate to look for the newest GitHub release's .zsync file. The file
+# name holds the version, so the name has a wildcard.
+UPDATE_INFORMATION = "gh-releases-zsync|cpntodd|YLR-Auto|latest|YLR-Auto-*-x86_64.AppImage.zsync"
 # Only what the About window's logo needs: WebM, VP9, Opus, and sound through
 # PulseAudio, which PipeWire also serves.
 GSTREAMER_PLUGINS = ("audioconvert", "audiofx", "audioresample", "autodetect", "coreelements",
@@ -182,11 +186,20 @@ def main():
     if len(sys.argv) < 2:
         print(f"Built {appdir}. Pass the path to appimagetool to pack it.")
         return
+    # appimagetool only warns when zsyncmake is missing, which would publish an AppImage
+    # that advertises updates with no .zsync file for them. Checked before the slow pack.
+    if shutil.which("zsyncmake", path=TOOL_PATH) is None:
+        sys.exit("zsyncmake is missing. Install the zsync package, then build again.")
     output = ROOT / "dist" / f"YLR-Auto-{project_version()}-x86_64.AppImage"
     output.parent.mkdir(exist_ok=True)
-    subprocess.run([sys.argv[1], str(appdir), str(output)], check=True,
-                   env={"ARCH": "x86_64", "PATH": "/usr/bin:/bin", "APPIMAGE_EXTRACT_AND_RUN": "1"})
+    subprocess.run([sys.argv[1], "--updateinformation", UPDATE_INFORMATION, str(appdir), str(output)],
+                   check=True, cwd=output.parent,
+                   env={"ARCH": "x86_64", "PATH": TOOL_PATH, "APPIMAGE_EXTRACT_AND_RUN": "1"})
+    zsync_file = output.with_name(output.name + ".zsync")
+    if not zsync_file.is_file():
+        sys.exit(f"appimagetool did not write {zsync_file}.")
     print(output)
+    print(zsync_file)
 
 
 if __name__ == "__main__":
