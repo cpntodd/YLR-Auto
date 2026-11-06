@@ -1,0 +1,22 @@
+[package]
+name = "ylr-core"
+description = "Filing rules, MakeMKV monitoring and the TMDb client for YLR-Auto. No GUI code."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fancy-regex = "0.14"
+filetime = "0.2"
+indexmap = "2"
+libc = "0.2"
+log = "0.4"
+regex = "1"
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+xattr = "1"
+
+[dev-dependencies]
+# The comparison with Python sends exact floats to the oracle.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tempfile = "3"
