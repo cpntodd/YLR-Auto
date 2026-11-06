@@ -1,0 +1,37 @@
+MSG:1005,0,1,"MakeMKV v2.0.0 linux(x64-release) started","%1 started","MakeMKV v2.0.0 linux(x64-release)"
+PRGT:5018,0,"Scanning CD-ROM devices"
+PRGC:5018,0,"Scanning CD-ROM devices"
+PRGT:3100,0,"Opening DVD disc"
+MSG:3007,0,0,"Using direct disc access mode","Using direct disc access mode"
+PRGC:3102,0,"Processing title sets"
+PRGC:3120,1,"Scanning contents"
+PRGC:3103,0,"Processing titles"
+MSG:3028,0,3,"Title #1 was added (16 cell(s), 2:14:08)","Title #%1 was added (%2 cell(s), %3)","1","16","2:14:08"
+MSG:3028,16777216,3,"Title #3 was added (2 cell(s), 0:05:24)","Title #%1 was added (%2 cell(s), %3)","3","2","0:05:24"
+MSG:3025,0,3,"Title #4 has length of 13 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","4","13","120"
+PRGC:3104,0,"Decrypting data"
+MSG:3034,0,2,"Audio stream #3 in title #3 looks empty and was skipped","Audio stream #%1 in title #%2 looks empty and was skipped","3","3"
+MSG:5011,0,0,"Operation successfully completed","Operation successfully completed"
+PRGT:5024,0,"Saving all titles to MKV files"
+MSG:5014,131072,2,"Saving 1 titles into directory file:///rips/READY_PLAYER_ONE","Saving %1 titles into directory %2","1","file:///rips/READY_PLAYER_ONE"
+PRGC:5057,0,"Analyzing seamless segments"
+PRGV:16384,0,65536
+PRGC:5017,0,"Saving to MKV file"
+PRGV:7867,7488,65536
+PRGV:12730,12434,65536
+PRGV:15816,15540,65536
+PRGV:19872,19720,65536
+PRGV:23084,22835,65536
+PRGV:27091,26978,65536
+PRGV:30989,30781,65536
+PRGV:34989,34817,65536
+PRGV:38825,38473,65536
+PRGV:42736,42448,65536
+PRGV:46876,46366,65536
+PRGV:50687,50542,65536
+PRGV:54723,54528,65536
+PRGV:58176,58061,65536
+PRGV:61919,61673,65536
+PRGV:65536,65536,65536
+MSG:5005,128,1,"1 titles saved","%1 titles saved","1"
+MSG:5036,260,1,"Copy complete. 1 titles saved.","Copy complete. %1 titles saved.","1"

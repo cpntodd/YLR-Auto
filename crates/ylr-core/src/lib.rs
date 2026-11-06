@@ -5,6 +5,7 @@
 
 pub mod autosort;
 pub mod monitor;
+pub mod ripper;
 pub mod tmdb;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
