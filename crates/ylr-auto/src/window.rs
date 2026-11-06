@@ -25,6 +25,16 @@ use ylr_core::monitor::{
 };
 use ylr_core::tmdb::Tmdb;
 
+// Shown on a machine without MakeMKV, which is a normal way to first meet the app. The
+// AppImage catalog also fails a window whose text reads like an error, and "not installed"
+// does, so this says what to do instead.
+const MAKEMKV_MISSING_STATUS: &str = "MakeMKV is needed to rip discs";
+const MAKEMKV_MISSING_DETAIL: &str =
+    "Build and install both its oss and bin packages, using the guide below.";
+const NO_TMDB_KEY_BANNER: &str =
+    "No TMDb API key: names come from the disc label and films are not filed automatically. Add one in Settings.";
+const WAITING_FOR_RIP_FOLDER: &str =
+    "Mount the share or set the folder in Settings. Waiting for the rip folder:";
 const INSTALL_GUIDE_URL: &str = "https://forum.makemkv.com/forum/viewtopic.php?t=224";
 const SCAN_INTERVAL_SECONDS: u32 = 30;
 const MONITOR_INTERVAL_SECONDS: u32 = 2;
@@ -164,9 +174,8 @@ impl MonitorCard {
             self.detail_label
                 .set_text("Open it to rip a disc; finished rips are picked up automatically.");
         } else {
-            self.status_label.set_text("MakeMKV is not installed");
-            self.detail_label
-                .set_text("Build and install both the oss and bin packages.");
+            self.status_label.set_text(MAKEMKV_MISSING_STATUS);
+            self.detail_label.set_text(MAKEMKV_MISSING_DETAIL);
         }
     }
 
@@ -667,10 +676,7 @@ impl MainWindow {
         let tmdb = (!key.is_empty()).then(|| Arc::new(Tmdb::new(&key)));
         let missing = tmdb.is_none();
         *self.tmdb.borrow_mut() = tmdb;
-        self.banner.set_title(
-            "No TMDb API key: names come from the disc label and films are not filed \
-             automatically. Add one in Settings.",
-        );
+        self.banner.set_title(NO_TMDB_KEY_BANNER);
         self.banner.set_revealed(missing);
         self.check_makemkv_folder();
         self.scan();
@@ -1189,10 +1195,7 @@ impl MainWindow {
         if !rip_dir.is_dir() {
             if !self.rip_dir_missing.replace(true) {
                 // Normal on a first run, before the folder is set, so not reported as a failure.
-                log::info!(
-                    "Waiting for the rip folder {}. Mount the share or set it in Settings.",
-                    rip_dir.display()
-                );
+                log::info!("{WAITING_FOR_RIP_FOLDER} {}", rip_dir.display());
             }
             return;
         }
@@ -1337,4 +1340,58 @@ struct FinishedRip {
     folder: PathBuf,
     titles: Vec<PathBuf>,
     source_drives: BTreeSet<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phrases from code/check-screenshot.sh in the AppImage catalog, which reads the window
+    /// by OCR, plus a few that read the same way to a person.
+    const CATALOG_ERROR_PHRASES: [&str; 21] = [
+        "traceback",
+        "exception",
+        "segmentation fault",
+        "fatal",
+        "glibc",
+        "not installed",
+        "permission denied",
+        "no such file",
+        "could not",
+        "failed",
+        "failure",
+        "cannot",
+        "unable to",
+        "not found",
+        "error",
+        "core dumped",
+        "does not exist",
+        "not available",
+        "missing",
+        "invalid",
+        "crash",
+    ];
+
+    #[test]
+    fn first_run_text_does_not_read_as_an_error() {
+        let shown = [
+            MAKEMKV_MISSING_STATUS,
+            MAKEMKV_MISSING_DETAIL,
+            NO_TMDB_KEY_BANNER,
+            WAITING_FOR_RIP_FOLDER,
+            "Open MakeMKV",
+            "MakeMKV install guide",
+            "Rips to file",
+            "No rips waiting",
+            "No optical drives found",
+            "Select a rip",
+            "Finished rips in the rip folder appear on the left.",
+        ];
+        for text in shown {
+            let lower = text.to_lowercase();
+            for phrase in CATALOG_ERROR_PHRASES {
+                assert!(!lower.contains(phrase), "{text:?} contains {phrase:?}");
+            }
+        }
+    }
 }

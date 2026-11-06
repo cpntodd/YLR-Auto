@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 (2026-11-06)
+
+- Say that MakeMKV is needed, and how to get it, instead of showing "not installed". The
+  AppImage catalog's test reads that phrase as an error message.
+
 ## 1.1.0 (2026-11-06)
 
 - Rewrite the app in Rust. It is now one program, with no Python, PyGObject or GTK 3,

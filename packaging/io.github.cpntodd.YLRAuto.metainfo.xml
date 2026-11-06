@@ -34,6 +34,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.1.1" date="2026-11-06">
+      <description>
+        <p>Says that MakeMKV is needed, and how to get it, when it is absent.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-11-06">
       <description>
         <p>Rewritten in Rust as one program with no Python dependency. It opens faster and uses less memory. A new install follows the desktop's light or dark preference. While ripping, the percentage is in the tray icon's tooltip.</p>
