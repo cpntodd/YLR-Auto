@@ -1,3 +1,17 @@
+ylr-auto (2.0.2) unstable; urgency=medium
+
+  * Accept a TMDb link or ID, show original titles, and split joined labels.
+    See CHANGELOG.md in the source repository.
+
+ -- cpntodd <cpntodd@users.noreply.github.com>  Fri, 06 Nov 2026 23:30:00 +0000
+
+ylr-auto (2.0.1) unstable; urgency=medium
+
+  * List similar titles when a TMDb search finds nothing.
+    See CHANGELOG.md in the source repository.
+
+ -- cpntodd <cpntodd@users.noreply.github.com>  Fri, 06 Nov 2026 23:00:00 +0000
+
 ylr-auto (2.0.0) unstable; urgency=medium
 
   * Rip from each drive through makemkvcon, choosing titles and a TMDb match.

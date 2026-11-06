@@ -23,14 +23,14 @@ Download a package from the [releases page](https://github.com/cpntodd/YLR-Auto/
 
 **Debian 13, Ubuntu 24.04 or newer (.deb)**
 
-    sudo apt install ./ylr-auto_2.0.0_amd64.deb
+    sudo apt install ./ylr-auto_2.0.2_amd64.deb
 
 Ubuntu 24.04 meets the package's version requirements, but has not been tested.
 
 **Other x86-64 distributions (AppImage)**
 
-    chmod +x YLR-Auto-2.0.0-x86_64.AppImage
-    ./YLR-Auto-2.0.0-x86_64.AppImage
+    chmod +x YLR-Auto-2.0.2-x86_64.AppImage
+    ./YLR-Auto-2.0.2-x86_64.AppImage
 
 The AppImage bundles GTK, libadwaita and its own C library, so it needs nothing else
 installed. It has been tested only on Debian 13, and uses software rendering. From 2.0.0
@@ -68,6 +68,7 @@ how a new install behaves; [Ripping settings](#ripping-settings) offers other wa
 2. **Find the film or series.** The label is searched on TMDb, with posters and main
    actors beside each result. Click the right one, or edit the name or year and search
    again. Choosing **Series** searches for shows instead.
+   [Finding a title](#finding-a-title) covers what to do when the name does not match.
 3. **Tick the titles to rip.** The main title starts ticked if it is at least twice as
    long as every other title. Clicking a film ticks the title with its TMDb runtime, if
    one is that long. Expand a title to see its tracks.
@@ -85,6 +86,25 @@ finishes** in Settings ejects it, which a dialog in MakeMKV's window would preve
 **Stop** asks first, then removes the unfinished title. Titles already finished stay and
 wait for you. If a rip fails, the row gives the reason and **Retry**, and the disc stays
 in the drive. Quitting while a drive is busy asks first, then stops it.
+
+## Finding a title
+
+Disc labels are often not the title TMDb uses. Both the disc page and the filing panel
+handle this the same way:
+
+- **Similar titles.** If a search finds nothing, YLR-Auto searches again with looser
+  wording, ignoring the year, and lists what it finds. None is selected for you. Pick one,
+  or edit the name.
+- **Joined words.** A one-word label is also searched split into words: `TIMEOUT` as
+  `time out`, and `APerfectGetaway` as `A Perfect Getaway`. Splitting without capitals uses
+  a built-in list of common title words, so some labels stay unsplit.
+- **A link or ID.** Paste a TMDb page link, or `tmdb:10184`, into **Name** and search to
+  select that exact title. A bare number is searched as a name, because *1917* is a film.
+  **File** stays disabled until a pasted link has been looked up.
+- **Original titles.** A result shows its original title when it differs, as in
+  `Time Out (2018), original title Furlough`.
+
+Automatic filing uses none of this. It still needs an exact name and a matching runtime.
 
 ## Ripping settings
 
@@ -205,6 +225,8 @@ Select a rip, then:
    poster and main actors beside each result, or edit the name to use it as typed. Rest
    the pointer on a poster for 2 seconds to see it large. Posters are cached
    in `~/.cache/littlerippa-autosort/posters`, which **Settings, Cache** can clear.
+
+   [Finding a title](#finding-a-title) covers what to do when the name does not match.
 
    ![A large poster shown over the TMDb results](docs/screenshot-poster.png)
 

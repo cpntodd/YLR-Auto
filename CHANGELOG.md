@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.2 (2026-11-06)
+
+- Paste a TMDb page link, or `tmdb:ID`, into **Name** and search to select that exact title.
+- Show a film's original title in search results when it differs.
+- Also search for a one-word label split into words, so `TIMEOUT` finds *Time Out* and
+  `APerfectGetaway` finds *A Perfect Getaway*.
+
+## 2.0.1 (2026-11-06)
+
+- When a TMDb search finds nothing, search again with looser wording and list similar
+  titles to pick from. None is selected for you, and automatic filing still needs an
+  exact match.
+
 ## 2.0.0 (2026-11-06)
 
 - Rip from each drive without opening MakeMKV's window. **Open** scans a disc and shows
