@@ -423,3 +423,63 @@ mod user_icons {
         }
     }
 }
+
+mod own_rips_and_held_drives {
+    use super::*;
+
+    /// A fake /proc entry: its parent, and links for its open files.
+    fn fake_process(proc_root: &Path, pid: u32, parent: u32, open_files: &[&str]) {
+        let directory = proc_root.join(pid.to_string());
+        fs::create_dir_all(directory.join("fd")).unwrap();
+        fs::write(directory.join("status"), format!("PPid:\t{parent}\n")).unwrap();
+        for (index, target) in open_files.iter().enumerate() {
+            symlink(target, directory.join("fd").join(index.to_string())).unwrap();
+        }
+    }
+
+    #[test]
+    fn leaves_out_only_the_rips_this_app_started() {
+        let proc_root = TempDir::new().unwrap();
+        fake_process(proc_root.path(), 10, 500, &[]);
+        fake_process(proc_root.path(), 11, 99, &[]);
+        let mine = output("/rips/MINE/a.mkv", 1, 10, &[]);
+        let theirs = output("/rips/THEIRS/b.mkv", 1, 11, &[]);
+        let snapshot = Snapshot {
+            backend_pids: BTreeSet::from([10, 11]),
+            outputs: vec![mine, theirs.clone()],
+            ..Snapshot::default()
+        };
+
+        let filtered = without_children_of(snapshot, proc_root.path(), 500);
+
+        assert_eq!(filtered.backend_pids, BTreeSet::from([11]));
+        assert_eq!(filtered.outputs, vec![theirs]);
+    }
+
+    #[test]
+    fn finds_drives_held_directly_or_through_their_scsi_device() {
+        let proc_root = TempDir::new().unwrap();
+        let scsi_generic = TempDir::new().unwrap();
+        fs::create_dir_all(scsi_generic.path().join("sg3/device/block/sr2")).unwrap();
+        fs::create_dir_all(scsi_generic.path().join("sg0/device/block/sda")).unwrap();
+        fake_process(proc_root.path(), 20, 1, &["/dev/sr0"]);
+        fake_process(
+            proc_root.path(),
+            21,
+            1,
+            &["/dev/sg3", "/dev/sg0", "/tmp/other"],
+        );
+        fake_process(proc_root.path(), 22, 1, &["/dev/sr1"]);
+
+        let held = gui_held_drives(
+            proc_root.path(),
+            scsi_generic.path(),
+            &BTreeSet::from([20, 21, 404]),
+        );
+
+        assert_eq!(
+            held,
+            BTreeSet::from(["/dev/sr0".to_string(), "/dev/sr2".to_string()])
+        );
+    }
+}

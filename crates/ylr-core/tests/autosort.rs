@@ -975,3 +975,87 @@ mod auto_file {
         assert!(!find_rips(&a.rip, 120.0, &finished)[0].settled);
     }
 }
+
+mod auto_file_picked {
+    use super::*;
+
+    fn catalogue(runtimes: Vec<(u64, f64)>) -> FakeCatalogue {
+        FakeCatalogue {
+            results: Vec::new(),
+            runtimes,
+            down: false,
+        }
+    }
+
+    fn file_as(
+        setup: &AutoFile,
+        folder: &Path,
+        picked: &Match,
+        catalogue: &FakeCatalogue,
+    ) -> AutoOutcome {
+        auto_file_picked_film(
+            folder,
+            "ODD_LABEL",
+            picked,
+            catalogue,
+            &setup.lib,
+            TmdbTag::None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn files_under_the_picked_name_though_the_label_differs() {
+        let setup = AutoFile::new();
+        let folder = setup.make_rip("ODD_LABEL", &[("t00", common::fake_mkv(6000.0))]);
+        let picked = film(7, "Ghost Stories", 2017);
+
+        let outcome = file_as(&setup, &folder, &picked, &catalogue(vec![(7, 6000.0)]));
+
+        let AutoOutcome::Filed { film: filed, .. } = outcome else {
+            panic!("expected filing, got {outcome:?}");
+        };
+        assert_eq!(filed, picked);
+        assert!(!folder.join("t00.mkv").exists());
+    }
+
+    #[test]
+    fn a_runtime_that_disagrees_with_the_pick_waits_for_a_person() {
+        let setup = AutoFile::new();
+        let folder = setup.make_rip("ODD_LABEL", &[("t00", common::fake_mkv(3000.0))]);
+        let picked = film(7, "Ghost Stories", 2017);
+
+        let outcome = file_as(&setup, &folder, &picked, &catalogue(vec![(7, 6000.0)]));
+
+        assert_declined(outcome, "does not match Ghost Stories");
+        assert!(folder.join("t00.mkv").exists());
+    }
+
+    #[test]
+    fn a_pick_with_no_listed_runtime_waits_for_a_person() {
+        let setup = AutoFile::new();
+        let folder = setup.make_rip("ODD_LABEL", &[("t00", common::fake_mkv(6000.0))]);
+        let picked = film(7, "Ghost Stories", 2017);
+
+        let outcome = file_as(&setup, &folder, &picked, &catalogue(Vec::new()));
+
+        assert_declined(outcome, "does not match");
+    }
+
+    #[test]
+    fn competing_long_titles_still_wait_for_a_person() {
+        let setup = AutoFile::new();
+        let folder = setup.make_rip(
+            "ODD_LABEL",
+            &[
+                ("t00", common::fake_mkv(6000.0)),
+                ("t01", common::fake_mkv(5900.0)),
+            ],
+        );
+        let picked = film(7, "Ghost Stories", 2017);
+
+        let outcome = file_as(&setup, &folder, &picked, &catalogue(vec![(7, 6000.0)]));
+
+        assert_declined(outcome, "nearly as long");
+    }
+}

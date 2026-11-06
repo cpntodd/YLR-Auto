@@ -198,6 +198,14 @@ impl AppState {
             window.toast("A rip is being filed. Quit once it finishes.");
             return;
         }
+        if let Some(window) = self
+            .window()
+            .filter(|window| window.running_drive_job_count() > 0)
+        {
+            self.show_window();
+            window.confirm_quit_while_ripping();
+            return;
+        }
         self.application.quit();
     }
 

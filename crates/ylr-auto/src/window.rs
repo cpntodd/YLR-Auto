@@ -3,6 +3,8 @@
 use crate::about::AboutWindow;
 use crate::app::AppState;
 use crate::config::{sync_desktop_entries, Config, Launch, Paths};
+use crate::drive_page::{DrivePage, PageState, PickedMatch};
+use crate::drive_row::{self, ActiveDriveRip, DriveJob, DriveRow, JobState, RowAction};
 use crate::logging;
 use crate::rip_panel::RipPanel;
 use crate::settings;
@@ -17,11 +19,15 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use ylr_core::autosort::{self as core, AutoOutcome, Rip};
 use ylr_core::monitor::{
     self, ActiveRip, Drive, RipEvent, RipTracker, Snapshot, WindowTitleReader,
+};
+use ylr_core::ripper::{
+    self, DiscInfo, RipOutcome, RipReport, RipRequest, RipSelection, RipUpdate,
 };
 use ylr_core::tmdb::Tmdb;
 
@@ -38,6 +44,10 @@ const WAITING_FOR_RIP_FOLDER: &str =
 const INSTALL_GUIDE_URL: &str = "https://forum.makemkv.com/forum/viewtopic.php?t=224";
 const SCAN_INTERVAL_SECONDS: u32 = 30;
 const MONITOR_INTERVAL_SECONDS: u32 = 2;
+/// Often enough for a progress bar to look alive; makemkvcon's updates queue meanwhile.
+const DRIVE_JOB_TICK: Duration = Duration::from_millis(250);
+const FOLDER_REMOVAL_RETRIES: u32 = 10;
+const FOLDER_REMOVAL_RETRY_DELAY: Duration = Duration::from_millis(300);
 /// Drive state changes rarely and each drive read costs a udevadm subprocess.
 const DRIVE_POLLS_PER_MONITOR_POLL: u32 = 5;
 /// The app can run for weeks from the tray, so the log pane must stay bounded.
@@ -63,7 +73,7 @@ struct MonitorCard {
     install_link: gtk::LinkButton,
     drive_list: gtk::ListBox,
     shown_drives: RefCell<Option<Vec<Drive>>>,
-    eject_buttons: RefCell<Vec<(String, gtk::Button, bool)>>,
+    drive_rows: RefCell<Vec<DriveRow>>,
 }
 
 impl MonitorCard {
@@ -111,10 +121,7 @@ impl MonitorCard {
         widget.append(&open_button);
         widget.append(&install_link);
 
-        let drive_list = gtk::ListBox::builder()
-            .css_classes(["boxed-list"])
-            .selection_mode(gtk::SelectionMode::None)
-            .build();
+        let drive_list = gtk::ListBox::builder().css_classes(["boxed-list"]).build();
         drive_list.set_placeholder(Some(
             &gtk::Label::builder()
                 .label("No optical drives found")
@@ -134,7 +141,7 @@ impl MonitorCard {
             install_link,
             drive_list,
             shown_drives: RefCell::new(None),
-            eject_buttons: RefCell::new(Vec::new()),
+            drive_rows: RefCell::new(Vec::new()),
         }
     }
 
@@ -172,7 +179,7 @@ impl MonitorCard {
         } else if installed {
             self.status_label.set_text("MakeMKV is not running");
             self.detail_label
-                .set_text("Open it to rip a disc; finished rips are picked up automatically.");
+                .set_text("Press Open on a drive to rip its disc, or use MakeMKV's own window.");
         } else {
             self.status_label.set_text(MAKEMKV_MISSING_STATUS);
             self.detail_label.set_text(MAKEMKV_MISSING_DETAIL);
@@ -227,47 +234,33 @@ impl MonitorCard {
         *self.shown_drives.borrow_mut() = Some(drives.to_vec());
         self.drive_list.remove_all();
 
-        let mut buttons = Vec::with_capacity(drives.len());
+        let mut rows = Vec::with_capacity(drives.len());
         for drive in drives {
-            let contents = match &drive.media_kind {
-                Some(kind) => format!(
-                    "{kind}: {}",
-                    drive.disc_label.as_deref().unwrap_or("no label")
+            let row = DriveRow::new(
+                drive,
+                glib::clone!(
+                    #[weak]
+                    window,
+                    move |device, action| window.on_drive_action(device, action)
                 ),
-                None => "No disc".to_string(),
-            };
-            let row = adw::ActionRow::builder()
-                .title(&drive.model)
-                .subtitle(contents)
-                .use_markup(false)
-                .build();
-            let tooltip = format!("Eject {}", drive.device);
-            let button = gtk::Button::builder()
-                .icon_name("media-eject-symbolic")
-                .valign(gtk::Align::Center)
-                .tooltip_text(&tooltip)
-                .css_classes(["flat"])
-                .build();
-            button.update_property(&[gtk::accessible::Property::Label(&tooltip)]);
-            let device = drive.device.clone();
-            button.connect_clicked(glib::clone!(
-                #[weak]
-                window,
-                move |_| window.eject(&device)
-            ));
-            row.add_suffix(&button);
-            self.drive_list.append(&row);
-            buttons.push((drive.device.clone(), button, drive.media_kind.is_some()));
+                glib::clone!(
+                    #[weak]
+                    window,
+                    move |device| window.eject(device)
+                ),
+            );
+            self.drive_list.append(row.widget());
+            rows.push(row);
         }
-        *self.eject_buttons.borrow_mut() = buttons;
+        *self.drive_rows.borrow_mut() = rows;
     }
 
     fn update_eject_buttons(&self, active_rips: &[ActiveRip], busy_drives: &BTreeSet<String>) {
-        for (device, button, has_media) in self.eject_buttons.borrow().iter() {
+        for row in self.drive_rows.borrow().iter() {
             // A rip whose source drive is unknown could be using any drive.
-            let in_use =
-                busy_drives.contains(device) || (!active_rips.is_empty() && busy_drives.is_empty());
-            button.set_sensitive(*has_media && !in_use);
+            let in_use = busy_drives.contains(&row.device)
+                || (!active_rips.is_empty() && busy_drives.is_empty());
+            row.set_eject_enabled(row.has_disc && !in_use);
         }
     }
 }
@@ -356,6 +349,16 @@ pub struct MainWindow {
     /// Folder to why the rip waits for a person.
     review_notes: RefCell<HashMap<PathBuf, String>>,
     told_still_running: Cell<bool>,
+    /// Device to its job. A device with no entry is idle.
+    drive_jobs: RefCell<HashMap<String, DriveJob>>,
+    gui_held_drives: RefCell<BTreeSet<String>>,
+    drive_pages: RefCell<HashMap<String, Rc<DrivePage>>>,
+    /// The drive shown in the right pane, if any.
+    selected_drive: RefCell<Option<String>>,
+    /// Rip folder to the TMDb match a person picked for it before ripping.
+    picked_matches: RefCell<HashMap<PathBuf, PickedMatch>>,
+    drive_cleanups_running: Cell<u32>,
+    quit_when_drives_idle: Cell<bool>,
     makemkv_destination: RefCell<Option<String>>,
     about_window: RefCell<Option<Rc<AboutWindow>>>,
 
@@ -526,6 +529,13 @@ impl MainWindow {
             autofiling: RefCell::new(HashSet::new()),
             review_notes: RefCell::new(HashMap::new()),
             told_still_running: Cell::new(false),
+            drive_jobs: RefCell::new(HashMap::new()),
+            gui_held_drives: RefCell::new(BTreeSet::new()),
+            drive_pages: RefCell::new(HashMap::new()),
+            selected_drive: RefCell::new(None),
+            picked_matches: RefCell::new(HashMap::new()),
+            drive_cleanups_running: Cell::new(0),
+            quit_when_drives_idle: Cell::new(false),
             makemkv_destination: RefCell::new(None),
             about_window: RefCell::new(None),
             banner,
@@ -560,6 +570,11 @@ impl MainWindow {
             #[weak]
             window,
             move |_| window.use_makemkv_folder()
+        ));
+        window.card.drive_list.connect_row_selected(glib::clone!(
+            #[weak]
+            window,
+            move |_, row| window.on_drive_selected(row.map(|row| row.index()))
         ));
         window.rip_list.connect_row_selected(glib::clone!(
             #[weak]
@@ -606,6 +621,19 @@ impl MainWindow {
                 glib::ControlFlow::Break,
                 move || {
                     window.poll_monitor();
+                    glib::ControlFlow::Continue
+                }
+            ),
+        );
+        glib::timeout_add_local(
+            DRIVE_JOB_TICK,
+            glib::clone!(
+                #[weak]
+                window,
+                #[upgrade_or]
+                glib::ControlFlow::Break,
+                move || {
+                    window.tick_drive_jobs();
                     glib::ControlFlow::Continue
                 }
             ),
@@ -789,8 +817,12 @@ impl MainWindow {
     }
 
     /// Keep monitoring from the tray; with no tray, closing quits.
-    fn on_close_request(&self) -> glib::Propagation {
+    fn on_close_request(self: &Rc<Self>) -> glib::Propagation {
         let Some(app) = self.app.upgrade().filter(|app| app.tray_is_ready()) else {
+            if self.running_drive_job_count() > 0 {
+                self.confirm_quit_while_ripping();
+                return glib::Propagation::Stop;
+            }
             return glib::Propagation::Proceed;
         };
         self.widget.set_visible(false);
@@ -852,6 +884,8 @@ impl MainWindow {
             self.check_makemkv_folder();
         }
 
+        *self.gui_held_drives.borrow_mut() = snapshot.gui_held_drives.clone();
+
         let events = self.tracker.borrow_mut().update(&snapshot);
         for event in events {
             self.on_monitor_event(event);
@@ -860,20 +894,38 @@ impl MainWindow {
         let active_rips = self.tracker.borrow().active_rips(snapshot.taken_at);
         let previous: HashSet<Option<PathBuf>> =
             self.active_folders.borrow().keys().cloned().collect();
-        let current: HashMap<Option<PathBuf>, ActiveRip> = active_rips
+        let mut current: HashMap<Option<PathBuf>, ActiveRip> = active_rips
             .iter()
             .map(|rip| (self.rip_path(&rip.folder), rip.clone()))
             .collect();
+        // Rips run from a drive row count as ripping too, or their folders would be
+        // offered for filing while being written.
+        for folder in self.drive_rip_folders() {
+            current.insert(
+                Some(folder.clone()),
+                ActiveRip {
+                    folder,
+                    current_title: None,
+                    bytes_written: 0,
+                    bytes_per_second: None,
+                    elapsed_seconds: 0.0,
+                },
+            );
+        }
         let changed = previous != current.keys().cloned().collect();
         *self.active_folders.borrow_mut() = current;
 
         if let Some(drives) = drives {
             self.card.update_drives(&drives, self);
             *self.latest_drives.borrow_mut() = drives;
+            self.forget_jobs_of_changed_discs();
+            self.reselect_drive_row();
         }
-        let busy_drives = self.tracker.borrow().busy_drives();
+        let mut busy_drives = self.tracker.borrow().busy_drives();
+        busy_drives.extend(self.running_drive_devices());
         self.card.update(&snapshot, &active_rips, &busy_drives);
         self.update_tray(&snapshot, &active_rips);
+        self.show_drive_rows();
         if changed {
             self.refresh_rip_labels();
         }
@@ -1023,12 +1075,29 @@ impl MainWindow {
             panel.refresh_state();
         }
 
+        let picked = self.picked_match(&folder);
         let work_folder = folder.clone();
         let window = self.clone();
         run_in_background(
             move || {
-                core::auto_file_film(&work_folder, &label, tmdb.as_ref(), &library, tag)
-                    .map_err(|e| e.to_string())
+                let filed = match picked {
+                    Some(picked) if picked.series => Ok(AutoOutcome::Declined {
+                        reason: "it was picked as a series, which is filed by hand".to_string(),
+                        guess: core::guess_from_label(&label),
+                    }),
+                    Some(picked) => core::auto_file_picked_film(
+                        &work_folder,
+                        &label,
+                        &picked.found,
+                        tmdb.as_ref(),
+                        &library,
+                        tag,
+                    ),
+                    None => {
+                        core::auto_file_film(&work_folder, &label, tmdb.as_ref(), &library, tag)
+                    }
+                };
+                filed.map_err(|e| e.to_string())
             },
             move |result| {
                 window.autofiling.borrow_mut().remove(&folder);
@@ -1133,7 +1202,8 @@ impl MainWindow {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        let state = if active_rips.is_empty() {
+        let drive_rips = self.drive_rip_descriptions();
+        let state = if active_rips.is_empty() && drive_rips.is_empty() {
             let status = if snapshot.running() {
                 "MakeMKV open"
             } else {
@@ -1147,19 +1217,659 @@ impl MainWindow {
                 ),
             }
         } else {
-            let described: Vec<String> = active_rips
+            let mut described: Vec<String> = active_rips
                 .iter()
                 .map(|rip| match snapshot.progress_by_folder.get(&rip.folder) {
                     Some(progress) => format!("{} {}%", name_of(&rip.folder), progress.percent),
                     None => name_of(&rip.folder),
                 })
                 .collect();
+            described.extend(drive_rips);
             TrayState {
                 icon: ripping_icon(),
                 tooltip: format!("{APP_NAME}: ripping {}", described.join(", ")),
             }
         };
         app.show_tray_state(state);
+    }
+
+    // Drive rows
+
+    fn drive_rip_folders(&self) -> Vec<PathBuf> {
+        self.drive_jobs
+            .borrow()
+            .values()
+            .filter_map(|job| match &job.state {
+                JobState::Ripping(rip) => Some(rip.folder.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn running_drive_devices(&self) -> Vec<String> {
+        self.drive_jobs
+            .borrow()
+            .iter()
+            .filter(|(_, job)| job.is_running())
+            .map(|(device, _)| device.clone())
+            .collect()
+    }
+
+    pub fn running_drive_job_count(&self) -> usize {
+        self.running_drive_devices().len()
+    }
+
+    fn drive_rip_descriptions(&self) -> Vec<String> {
+        self.drive_jobs
+            .borrow()
+            .values()
+            .filter_map(|job| match &job.state {
+                JobState::Ripping(rip) => Some(match rip.progress {
+                    Some(progress) => {
+                        let percent = (progress.overall_fraction * 100.0).floor();
+                        format!("{} {percent:.0}%", job.name)
+                    }
+                    None => job.name.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn show_drive_rows(&self) {
+        let backend_available = ripper::backend_installed();
+        let drives = self.latest_drives.borrow();
+        let jobs = self.drive_jobs.borrow();
+        let held = self.gui_held_drives.borrow();
+        for row in self.card.drive_rows.borrow().iter() {
+            let Some(drive) = drives.iter().find(|drive| drive.device == row.device) else {
+                continue;
+            };
+            let view = drive_row::describe(
+                drive,
+                jobs.get(&row.device),
+                held.contains(&row.device),
+                backend_available,
+            );
+            row.show(view);
+        }
+        for (device, page) in self.drive_pages.borrow().iter() {
+            if let Some(job) = jobs.get(device) {
+                page.show_state(page_state_of(job));
+            }
+        }
+    }
+
+    pub fn picked_match(&self, folder: &Path) -> Option<PickedMatch> {
+        self.picked_matches.borrow().get(folder).cloned()
+    }
+
+    fn on_drive_selected(self: &Rc<Self>, index: Option<i32>) {
+        let Some(index) = index else {
+            return;
+        };
+        let device = self
+            .card
+            .drive_rows
+            .borrow()
+            .get(index as usize)
+            .map(|row| row.device.clone());
+        let Some(device) = device else {
+            return;
+        };
+        *self.selected_drive.borrow_mut() = Some(device);
+        // This also empties the pane, so the drive's page goes in afterwards.
+        self.rip_list.unselect_all();
+        self.show_selected_drive();
+    }
+
+    /// Selecting a row again after the list was rebuilt, which drops the selection.
+    fn reselect_drive_row(&self) {
+        let selected = self.selected_drive.borrow().clone();
+        let rows = self.card.drive_rows.borrow();
+        let row = rows
+            .iter()
+            .find(|row| Some(&row.device) == selected.as_ref());
+        if let Some(row) = row {
+            self.card.drive_list.select_row(Some(row.widget()));
+        }
+    }
+
+    fn show_selected_drive(self: &Rc<Self>) {
+        let Some(device) = self.selected_drive.borrow().clone() else {
+            return;
+        };
+        let page = self.drive_pages.borrow().get(&device).cloned();
+        if let Some(page) = page {
+            self.detail.set_child(Some(&page.widget));
+            return;
+        }
+        let prompt = self.drive_prompt(&device);
+        self.detail.set_child(Some(&prompt));
+    }
+
+    /// The pane for a drive with no opened disc.
+    fn drive_prompt(self: &Rc<Self>, device: &str) -> adw::StatusPage {
+        let drive = self
+            .latest_drives
+            .borrow()
+            .iter()
+            .find(|drive| drive.device == device)
+            .cloned();
+        let is_busy = self
+            .drive_jobs
+            .borrow()
+            .get(device)
+            .is_some_and(DriveJob::is_running);
+        let prompt = adw::StatusPage::builder()
+            .icon_name("media-optical-symbolic")
+            .title(drive.as_ref().map_or(device, |drive| drive.model.as_str()))
+            .build();
+        if is_busy {
+            prompt.set_description(Some("Scanning the disc for its titles."));
+        } else if let Some(drive) = drive.filter(|drive| drive.media_kind.is_some()) {
+            prompt.set_description(Some(
+                drive
+                    .disc_label
+                    .as_deref()
+                    .unwrap_or("A disc with no label"),
+            ));
+            let open = gtk::Button::builder()
+                .label("Open")
+                .halign(gtk::Align::Center)
+                .css_classes(["pill", "suggested-action"])
+                .sensitive(
+                    ripper::backend_installed() && !self.gui_held_drives.borrow().contains(device),
+                )
+                .build();
+            let device = device.to_string();
+            open.connect_clicked(glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_| window.on_drive_action(&device, RowAction::Open)
+            ));
+            prompt.set_child(Some(&open));
+        } else {
+            prompt.set_description(Some("No disc in this drive."));
+        }
+        prompt
+    }
+
+    pub fn on_drive_ticks_changed(&self, device: &str) {
+        let ticked = self
+            .drive_pages
+            .borrow()
+            .get(device)
+            .map(|page| page.ticked_count());
+        let Some(ticked) = ticked else {
+            return;
+        };
+        if let Some(JobState::Opened { ticked: shown, .. }) = self
+            .drive_jobs
+            .borrow_mut()
+            .get_mut(device)
+            .map(|job| &mut job.state)
+        {
+            *shown = ticked;
+        }
+        self.show_drive_rows();
+    }
+
+    pub fn on_drive_page_button(self: &Rc<Self>, device: &str) {
+        let is_ripping = matches!(
+            self.drive_jobs.borrow().get(device).map(|job| &job.state),
+            Some(JobState::Ripping(_))
+        );
+        let action = if is_ripping {
+            RowAction::Stop
+        } else {
+            RowAction::RipSelected
+        };
+        self.on_drive_action(device, action);
+    }
+
+    /// A result and its page stop applying once their disc has left the drive.
+    fn forget_jobs_of_changed_discs(self: &Rc<Self>) {
+        {
+            let drives = self.latest_drives.borrow();
+            self.drive_jobs.borrow_mut().retain(|device, job| {
+                let same_disc = drives.iter().any(|drive| {
+                    drive.device == *device
+                        && drive.media_kind.is_some()
+                        && drive.disc_label == job.disc_when_started
+                });
+                job.is_running() || same_disc
+            });
+        }
+        {
+            let jobs = self.drive_jobs.borrow();
+            self.drive_pages
+                .borrow_mut()
+                .retain(|device, _| jobs.contains_key(device));
+        }
+        self.show_selected_drive();
+    }
+
+    fn on_drive_action(self: &Rc<Self>, device: &str, action: RowAction) {
+        match action {
+            RowAction::Open => self.open_drive(device),
+            RowAction::RipSelected => self.start_selected_rip(device),
+            RowAction::CancelScan => {
+                if let Some(JobState::Scanning { cancel }) =
+                    self.drive_jobs.borrow().get(device).map(|job| &job.state)
+                {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            RowAction::Stop => self.confirm_stop_drive_rip(device),
+        }
+    }
+
+    /// Scan the disc and show its page. Pressing Open is a click on this drive, so the
+    /// right pane follows it.
+    fn open_drive(self: &Rc<Self>, device: &str) {
+        let disc_label = self
+            .latest_drives
+            .borrow()
+            .iter()
+            .find(|drive| drive.device == device)
+            .and_then(|drive| drive.disc_label.clone());
+        let name = disc_label.clone().unwrap_or_else(|| device.to_string());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.drive_pages.borrow_mut().remove(device);
+        self.drive_jobs.borrow_mut().insert(
+            device.to_string(),
+            DriveJob {
+                disc_when_started: disc_label,
+                name,
+                state: JobState::Scanning {
+                    cancel: cancel.clone(),
+                },
+            },
+        );
+        self.show_drive_rows();
+
+        let row = self
+            .card
+            .drive_rows
+            .borrow()
+            .iter()
+            .find(|row| row.device == device)
+            .map(|row| row.widget().clone());
+        *self.selected_drive.borrow_mut() = Some(device.to_string());
+        self.card.drive_list.select_row(row.as_ref());
+        self.show_selected_drive();
+
+        let target = device.to_string();
+        let device = device.to_string();
+        let window = self.clone();
+        run_in_background(
+            move || {
+                let minimum = ripper::DEFAULT_MINIMUM_TITLE_SECONDS;
+                ripper::scan_disc(&target, minimum, &cancel)
+            },
+            move |result| window.on_drive_scanned(&device, result),
+        );
+    }
+
+    fn on_drive_scanned(self: &Rc<Self>, device: &str, result: Result<DiscInfo, String>) {
+        let cancelled = matches!(
+            self.drive_jobs.borrow().get(device).map(|job| &job.state),
+            Some(JobState::Scanning { cancel }) if cancel.load(Ordering::Relaxed)
+        );
+        if cancelled {
+            self.drive_jobs.borrow_mut().remove(device);
+            self.show_drive_rows();
+            self.show_selected_drive();
+            self.quit_if_drives_idle();
+            return;
+        }
+
+        let drive = self
+            .latest_drives
+            .borrow()
+            .iter()
+            .find(|drive| drive.device == device)
+            .cloned();
+        let next_state = match (result, drive) {
+            (Err(reason), _) => {
+                log::warn!("{device}: {reason}");
+                self.notify_drive(device, "Could not scan a disc", &reason);
+                JobState::Failed { reason }
+            }
+            (Ok(disc), _) if disc.titles.is_empty() => JobState::Failed {
+                reason: format!(
+                    "No titles of {} minutes or longer on this disc.",
+                    ripper::DEFAULT_MINIMUM_TITLE_SECONDS / 60
+                ),
+            },
+            (Ok(_), None) => JobState::Failed {
+                reason: "The drive is no longer listed.".to_string(),
+            },
+            (Ok(disc), Some(drive)) => {
+                if let (Some(label), Some(job)) =
+                    (&disc.label, self.drive_jobs.borrow_mut().get_mut(device))
+                {
+                    job.name = label.clone();
+                }
+                let title_count = disc.titles.len();
+                let page = DrivePage::new(self, &drive, disc);
+                let ticked = page.ticked_count();
+                self.drive_pages
+                    .borrow_mut()
+                    .insert(device.to_string(), page);
+                self.notify_drive(
+                    device,
+                    "A disc is ready",
+                    "Choose its titles, then press Rip.",
+                );
+                JobState::Opened {
+                    title_count,
+                    ticked,
+                }
+            }
+        };
+        if let Some(job) = self.drive_jobs.borrow_mut().get_mut(device) {
+            job.state = next_state;
+        }
+        self.show_drive_rows();
+        if self.selected_drive.borrow().as_deref() == Some(device) {
+            self.show_selected_drive();
+        }
+        self.quit_if_drives_idle();
+    }
+
+    /// Rips what the drive's page has ticked. Its folder is made off the GUI thread,
+    /// because the rip folder is often on a network share.
+    fn start_selected_rip(self: &Rc<Self>, device: &str) {
+        let page = self.drive_pages.borrow().get(device).cloned();
+        let Some(page) = page else {
+            return;
+        };
+        let Some(selection) = page.selection() else {
+            return;
+        };
+        if let Some(job) = self.drive_jobs.borrow_mut().get_mut(device) {
+            job.state = JobState::Preparing;
+        }
+        self.show_drive_rows();
+
+        let rip_dir = PathBuf::from(self.config.borrow().text("rip_dir"));
+        let label = page.disc_label();
+        let picked = page.picked_match();
+        let device = device.to_string();
+        let window = self.clone();
+        run_in_background(
+            move || ripper::create_rip_folder(&rip_dir, label.as_deref()),
+            move |result| window.on_rip_folder_made(&device, selection, picked, result),
+        );
+    }
+
+    fn on_rip_folder_made(
+        self: &Rc<Self>,
+        device: &str,
+        selection: RipSelection,
+        picked: Option<PickedMatch>,
+        result: Result<PathBuf, String>,
+    ) {
+        let next_state = match result {
+            Err(reason) => {
+                log::warn!("{device}: {reason}");
+                JobState::Failed { reason }
+            }
+            Ok(folder) => {
+                if let Some(picked) = picked {
+                    self.picked_matches
+                        .borrow_mut()
+                        .insert(folder.clone(), picked);
+                }
+                log::info!("{device}: ripping to {}", folder.display());
+                let rip = ripper::start_rip(RipRequest {
+                    device: device.to_string(),
+                    selection,
+                    destination: folder.clone(),
+                    minimum_title_seconds: ripper::DEFAULT_MINIMUM_TITLE_SECONDS,
+                });
+                JobState::Ripping(ActiveDriveRip {
+                    rip,
+                    folder,
+                    status: "Opening the disc".to_string(),
+                    progress: None,
+                    stopping: false,
+                })
+            }
+        };
+        if let Some(job) = self.drive_jobs.borrow_mut().get_mut(device) {
+            job.state = next_state;
+        }
+        self.show_drive_rows();
+        self.quit_if_drives_idle();
+    }
+
+    /// Moves queued updates into the jobs, then acts on rips that ended. The borrow ends
+    /// before acting, because that reaches widgets and can run handlers that borrow.
+    fn tick_drive_jobs(self: &Rc<Self>) {
+        let mut finished = Vec::new();
+        for (device, job) in self.drive_jobs.borrow_mut().iter_mut() {
+            let JobState::Ripping(active) = &mut job.state else {
+                continue;
+            };
+            for update in active.rip.drain_updates() {
+                match update {
+                    RipUpdate::Status(status) => active.status = status,
+                    RipUpdate::Progress(progress) => active.progress = Some(progress),
+                    RipUpdate::Message(message) => log::info!("{}: {message}", job.name),
+                    RipUpdate::Finished(report) => finished.push((device.clone(), report)),
+                }
+            }
+        }
+
+        for (device, report) in finished {
+            self.on_drive_rip_finished(&device, report);
+        }
+        self.show_drive_rows();
+    }
+
+    fn on_drive_rip_finished(self: &Rc<Self>, device: &str, report: RipReport) {
+        let Some((name, folder)) = self
+            .drive_jobs
+            .borrow()
+            .get(device)
+            .and_then(|job| match &job.state {
+                JobState::Ripping(active) => Some((job.name.clone(), active.folder.clone())),
+                _ => None,
+            })
+        else {
+            return;
+        };
+
+        let next_state = match &report.outcome {
+            RipOutcome::Completed => {
+                log::info!("{name}: saved {} title(s)", report.finished_titles.len());
+                self.notify_drive(
+                    device,
+                    &format!("{name} is ripped"),
+                    "Its titles are ready to file.",
+                );
+                let finished = FinishedRip {
+                    folder: fs::canonicalize(&folder).unwrap_or_else(|_| folder.clone()),
+                    titles: report.finished_titles.clone(),
+                    source_drives: BTreeSet::from([device.to_string()]),
+                };
+                self.on_rip_finished(finished);
+                Some(JobState::Saved {
+                    title_count: report.finished_titles.len(),
+                })
+            }
+            RipOutcome::Stopped => {
+                log::info!("{name}: stopped");
+                self.remove_stopped_rip_files(&folder, &name, report);
+                None
+            }
+            RipOutcome::Failed { reason } => {
+                log::warn!("{name}: {reason}");
+                self.notify_drive(device, &format!("{name} could not be ripped"), reason);
+                let has_files =
+                    !report.finished_titles.is_empty() || !report.incomplete_titles.is_empty();
+                if has_files {
+                    self.leave_for_review(Some(&folder), &name, "the rip failed");
+                }
+                Some(JobState::Failed {
+                    reason: reason.clone(),
+                })
+            }
+        };
+
+        let mut jobs = self.drive_jobs.borrow_mut();
+        match next_state {
+            Some(state) => {
+                if let Some(job) = jobs.get_mut(device) {
+                    job.state = state;
+                }
+            }
+            None => {
+                jobs.remove(device);
+            }
+        }
+        drop(jobs);
+        if !self.drive_jobs.borrow().contains_key(device) {
+            self.drive_pages.borrow_mut().remove(device);
+            if self.selected_drive.borrow().as_deref() == Some(device) {
+                self.show_selected_drive();
+            }
+        }
+        self.quit_if_drives_idle();
+    }
+
+    /// Unfinished titles are removed. Whole titles from earlier in the rip stay and wait
+    /// for a person, since the disc was not delivered as asked.
+    fn remove_stopped_rip_files(self: &Rc<Self>, folder: &Path, name: &str, report: RipReport) {
+        self.drive_cleanups_running
+            .set(self.drive_cleanups_running.get() + 1);
+        let incomplete = report.incomplete_titles;
+        let kept_titles = !report.finished_titles.is_empty();
+        let target = folder.to_path_buf();
+        let folder = folder.to_path_buf();
+        let name = name.to_string();
+        let window = self.clone();
+        run_in_background(
+            move || {
+                for path in &incomplete {
+                    if let Err(e) = fs::remove_file(path) {
+                        log::warn!("Could not remove {}: {e}", path.display());
+                    }
+                }
+                if !kept_titles {
+                    remove_empty_rip_folder(&target);
+                }
+                Ok(())
+            },
+            move |_: Result<(), String>| {
+                window
+                    .drive_cleanups_running
+                    .set(window.drive_cleanups_running.get() - 1);
+                if kept_titles {
+                    window.leave_for_review(Some(&folder), &name, "the rip was stopped");
+                }
+                window.quit_if_drives_idle();
+            },
+        );
+    }
+
+    fn notify_drive(&self, device: &str, title: &str, body: &str) {
+        if let Some(app) = self.app.upgrade() {
+            app.notify(&format!("drive-{device}"), title, body, None);
+        }
+    }
+
+    fn confirm_stop_drive_rip(self: &Rc<Self>, device: &str) {
+        let name = self
+            .drive_jobs
+            .borrow()
+            .get(device)
+            .map_or_else(|| device.to_string(), |job| job.name.clone());
+        let dialog = adw::AlertDialog::new(
+            Some(&format!("Stop ripping {name}?")),
+            Some("The title being saved is removed. Titles already finished are kept."),
+        );
+        dialog.add_responses(&[("keep", "Keep Ripping"), ("stop", "Stop")]);
+        dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("keep");
+        let device = device.to_string();
+        let window = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "stop" {
+                window.stop_drive_rip(&device);
+            }
+        });
+        dialog.present(Some(&self.widget));
+    }
+
+    fn stop_drive_rip(&self, device: &str) {
+        if let Some(JobState::Ripping(active)) = self
+            .drive_jobs
+            .borrow_mut()
+            .get_mut(device)
+            .map(|job| &mut job.state)
+        {
+            active.rip.stop();
+            active.stopping = true;
+        }
+        self.show_drive_rows();
+    }
+
+    /// Stops every drive's work, and quits once it has all ended and been cleaned up.
+    pub fn confirm_quit_while_ripping(self: &Rc<Self>) {
+        self.widget.present();
+        let running = self.running_drive_job_count();
+        let dialog = adw::AlertDialog::new(
+            Some("Stop ripping and quit?"),
+            Some(&format!(
+                "{running} drive(s) are busy. Their unfinished titles are removed."
+            )),
+        );
+        dialog.add_responses(&[("keep", "Keep Ripping"), ("quit", "Stop and Quit")]);
+        dialog.set_response_appearance("quit", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("keep");
+        let window = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "quit" {
+                window.stop_all_drive_jobs_and_quit();
+            }
+        });
+        dialog.present(Some(&self.widget));
+    }
+
+    fn stop_all_drive_jobs_and_quit(self: &Rc<Self>) {
+        self.quit_when_drives_idle.set(true);
+        for device in self.running_drive_devices() {
+            let is_scanning = {
+                let jobs = self.drive_jobs.borrow();
+                match jobs.get(&device).map(|job| &job.state) {
+                    Some(JobState::Scanning { cancel }) => {
+                        cancel.store(true, Ordering::Relaxed);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if !is_scanning {
+                self.stop_drive_rip(&device);
+            }
+        }
+        self.quit_if_drives_idle();
+    }
+
+    fn quit_if_drives_idle(&self) {
+        let idle = self.running_drive_job_count() == 0 && self.drive_cleanups_running.get() == 0;
+        if !idle || !self.quit_when_drives_idle.get() {
+            return;
+        }
+        if let Some(app) = self.app.upgrade() {
+            app.application().quit();
+        }
     }
 
     // Rip list
@@ -1232,6 +1942,10 @@ impl MainWindow {
         self.review_notes
             .borrow_mut()
             .retain(|folder, _| listed.contains_key(folder));
+        let ripping = self.drive_rip_folders();
+        self.picked_matches
+            .borrow_mut()
+            .retain(|folder, _| listed.contains_key(folder) || ripping.contains(folder));
         self.panels
             .borrow_mut()
             .retain(|folder, panel| listed.contains_key(folder) || panel.is_busy());
@@ -1320,6 +2034,8 @@ impl MainWindow {
             self.detail.set_child(Some(&self.empty_page));
             return;
         };
+        *self.selected_drive.borrow_mut() = None;
+        self.card.drive_list.unselect_all();
         let rip = self.rips.borrow().get(&folder).cloned();
         let Some(rip) = rip else {
             return;
@@ -1336,6 +2052,41 @@ impl MainWindow {
 }
 
 /// A rip MakeMKV has stopped writing.
+/// What a drive's page shows for its job.
+fn page_state_of(job: &DriveJob) -> PageState {
+    match &job.state {
+        JobState::Scanning { .. } | JobState::Opened { .. } => PageState::Choosing { status: None },
+        JobState::Preparing => PageState::Preparing,
+        JobState::Ripping(active) => PageState::Ripping {
+            fraction: active.progress.map(|progress| progress.overall_fraction),
+            status: drive_row::rip_detail(active),
+            stopping: active.stopping,
+        },
+        JobState::Saved { title_count } => PageState::Choosing {
+            status: Some(format!("Saved {title_count} title(s).")),
+        },
+        JobState::Failed { reason } => PageState::Choosing {
+            status: Some(format!("Failed: {reason}")),
+        },
+    }
+}
+
+/// A network share can briefly refuse to remove a folder right after its last file went.
+/// If it still fails, something else is in the folder and it now belongs to a person.
+fn remove_empty_rip_folder(folder: &Path) {
+    let mut result = fs::remove_dir(folder);
+    for _ in 0..FOLDER_REMOVAL_RETRIES {
+        if result.is_ok() {
+            return;
+        }
+        std::thread::sleep(FOLDER_REMOVAL_RETRY_DELAY);
+        result = fs::remove_dir(folder);
+    }
+    if let Err(e) = result {
+        log::warn!("Left {} in place: {e}", folder.display());
+    }
+}
+
 struct FinishedRip {
     folder: PathBuf,
     titles: Vec<PathBuf>,
@@ -1384,6 +2135,7 @@ mod tests {
             "Rips to file",
             "No rips waiting",
             "No optical drives found",
+            "Press Open on a drive to rip its disc, or use MakeMKV's own window.",
             "Select a rip",
             "Finished rips in the rip folder appear on the left.",
         ];

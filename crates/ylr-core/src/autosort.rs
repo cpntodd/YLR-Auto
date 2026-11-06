@@ -1355,20 +1355,102 @@ pub fn auto_file_film(
         }
     };
 
+    file_chosen_film(
+        FilmFiling {
+            folder,
+            main,
+            library_dir,
+            tag,
+        },
+        film,
+        guess,
+    )
+}
+
+/// File a finished rip as the film a person picked before ripping it.
+///
+/// Their pick replaces the search by name, because that is what they just settled, but
+/// the runtime is still checked: a wrong pick or a partial rip then waits for a person
+/// instead of being filed under the wrong name.
+pub fn auto_file_picked_film(
+    folder: &Path,
+    label: &str,
+    film: &Match,
+    catalogue: &dyn FilmCatalogue,
+    library_dir: &Path,
+    tag: TmdbTag,
+) -> io::Result<AutoOutcome> {
+    let mut guess = guess_from_label(label);
+    guess.is_tv = false;
+    let titles = rip_titles(folder)?;
+    let declined = |reason: String, guess: &LabelGuess| {
+        Ok(AutoOutcome::Declined {
+            reason,
+            guess: guess.clone(),
+        })
+    };
+
+    if let Some(reason) = film_decline_reason(&guess, &titles) {
+        return declined(reason, &guess);
+    }
+    let Some(main) = main_feature(&titles) else {
+        return declined("the folder holds no .mkv files".to_string(), &guess);
+    };
+    let runtime = known(main.duration).unwrap_or(0.0);
+
+    let listed = match catalogue.movie_runtime(film.tmdb_id) {
+        Ok(listed) => listed,
+        Err(e) => return declined(e.to_string(), &guess),
+    };
+    if !known(listed).is_some_and(|listed| same_runtime(listed, runtime)) {
+        return declined(
+            format!(
+                "the runtime of {} does not match {}, the film picked for it",
+                minutes(Some(runtime)),
+                film.title
+            ),
+            &guess,
+        );
+    }
+
+    file_chosen_film(
+        FilmFiling {
+            folder,
+            main,
+            library_dir,
+            tag,
+        },
+        film.clone(),
+        guess,
+    )
+}
+
+/// Where a film's files are and where they go.
+struct FilmFiling<'a> {
+    folder: &'a Path,
+    main: &'a Title,
+    library_dir: &'a Path,
+    tag: TmdbTag,
+}
+
+fn file_chosen_film(filing: FilmFiling, film: Match, guess: LabelGuess) -> io::Result<AutoOutcome> {
     let job = MovieJob {
-        folder: folder.to_path_buf(),
-        main: main.path.clone(),
+        folder: filing.folder.to_path_buf(),
+        main: filing.main.path.clone(),
         name: LibraryName {
             title: film.title.clone(),
             year: film.year,
             tmdb_id: Some(film.tmdb_id),
-            tag,
+            tag: filing.tag,
         },
     };
-    let filed = ensure_library(library_dir)
-        .and_then(|()| file_movie(&job, library_dir, DuplicateHandling::LeaveForPerson));
+    let filed = ensure_library(filing.library_dir)
+        .and_then(|()| file_movie(&job, filing.library_dir, DuplicateHandling::LeaveForPerson));
     match filed {
         Ok(destination) => Ok(AutoOutcome::Filed { destination, film }),
-        Err(e) => declined(e.to_string(), &guess),
+        Err(e) => Ok(AutoOutcome::Declined {
+            reason: e.to_string(),
+            guess,
+        }),
     }
 }

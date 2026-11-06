@@ -13,6 +13,7 @@
 use crate::autosort;
 use crate::monitor::host_environment;
 use std::collections::BTreeSet;
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
@@ -31,6 +32,10 @@ const BACKEND_PROGRAM: &str = "makemkvcon";
 /// a scan and the rip that follows it must use the same value: on a real disc, title 1
 /// from the scan was MakeMKV's "Title #3" because a shorter one had been skipped.
 pub const DEFAULT_MINIMUM_TITLE_SECONDS: u32 = 120;
+
+const UNNAMED_DISC_FOLDER: &str = "Disc";
+/// Far more copies of one disc than anyone keeps; only stops an endless search.
+const MAX_FOLDER_ATTEMPTS: u32 = 999;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Scans of real discs took up to 79 seconds. A damaged disc retries for far longer, but
@@ -320,6 +325,37 @@ impl DiscInfoBuilder {
     }
 }
 
+/// The one title that is clearly the film: a lone title, or one more than this many
+/// times as long as every other. Episodes of a series are close in length and extras
+/// are far shorter, so this separates a series disc, which needs a person, from a film.
+const MAIN_TITLE_LENGTH_RATIO: u64 = 2;
+
+/// The title to rip without asking, or None when a person should choose.
+pub fn obvious_main_title(titles: &[DiscTitle]) -> Option<TitleChoice> {
+    let seconds_of = |title: &DiscTitle| title.duration_seconds().unwrap_or(0);
+    let longest = titles.iter().max_by_key(|title| seconds_of(title))?;
+    let stands_out = titles
+        .iter()
+        .filter(|title| title.id != longest.id)
+        .all(|title| seconds_of(title) * MAIN_TITLE_LENGTH_RATIO <= seconds_of(longest));
+    let choice = TitleChoice {
+        id: longest.id,
+        size_bytes: longest.size_bytes,
+    };
+    stands_out.then_some(choice)
+}
+
+/// The title closest to a film's listed runtime, among those near enough to be that film.
+pub fn title_of_runtime(titles: &[DiscTitle], runtime_seconds: f64) -> Option<u32> {
+    let difference = |seconds: f64| (seconds - runtime_seconds).abs();
+    titles
+        .iter()
+        .filter_map(|title| Some((title.id, title.duration_seconds()? as f64)))
+        .filter(|(_, seconds)| autosort::same_runtime(*seconds, runtime_seconds))
+        .min_by(|(_, a), (_, b)| difference(*a).total_cmp(&difference(*b)))
+        .map(|(id, _)| id)
+}
+
 // Why a run failed
 
 /// Remembers what makemkvcon said, to give a reason if it fails.
@@ -470,6 +506,13 @@ fn could_not_start(error: &io::Error) -> String {
     )
 }
 
+/// Whether makemkvcon can be found on PATH.
+pub fn backend_installed() -> bool {
+    env::var_os("PATH").is_some_and(|search_path| {
+        env::split_paths(&search_path).any(|folder| folder.join(BACKEND_PROGRAM).is_file())
+    })
+}
+
 /// Read a disc's titles. Blocks for as long as the scan takes, usually under two
 /// minutes, so call it off the GUI thread. The error's message is fit to show the user.
 /// Setting `stop` cancels the scan, which then returns an error.
@@ -610,6 +653,41 @@ pub fn start_rip(request: RipRequest) -> RunningRip {
     let worker_stop = stop.clone();
     thread::spawn(move || run_rip(&request, &worker_stop, &sender));
     RunningRip { updates, stop }
+}
+
+/// Create a new folder for one rip, named from the disc. create_dir fails if the name is
+/// taken, so two drives holding copies of a disc cannot be given the same folder, and a
+/// rip never mixes with an earlier one. The error's message is fit to show the user.
+pub fn create_rip_folder(rip_dir: &Path, disc_label: Option<&str>) -> Result<PathBuf, String> {
+    let name = autosort::safe_filename(disc_label.unwrap_or(UNNAMED_DISC_FOLDER));
+    let name = if name.is_empty() {
+        UNNAMED_DISC_FOLDER.to_string()
+    } else {
+        name
+    };
+
+    for attempt in 1..=MAX_FOLDER_ATTEMPTS {
+        let folder_name = if attempt == 1 {
+            name.clone()
+        } else {
+            format!("{name} ({attempt})")
+        };
+        let folder = rip_dir.join(folder_name);
+        match fs::create_dir(&folder) {
+            Ok(()) => return Ok(folder),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not create {} ({error}). Check the rip folder in Settings.",
+                    folder.display()
+                ))
+            }
+        }
+    }
+    Err(format!(
+        "{} already has {MAX_FOLDER_ATTEMPTS} folders named {name}. File or remove some.",
+        rip_dir.display()
+    ))
 }
 
 /// One makemkvcon run: what it rips, and which part of the whole rip that is.

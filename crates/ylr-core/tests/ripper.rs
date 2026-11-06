@@ -140,6 +140,130 @@ mod disc_info {
     }
 }
 
+mod main_title {
+    use super::*;
+
+    fn title(id: u32, duration: &str) -> DiscTitle {
+        DiscTitle {
+            id,
+            duration: duration.to_string(),
+            size_bytes: u64::from(id) + 100,
+            ..DiscTitle::default()
+        }
+    }
+
+    #[test]
+    fn a_lone_title_is_the_main_title() {
+        let choice = obvious_main_title(&[title(3, "0:30:00")]);
+        assert_eq!(
+            choice,
+            Some(TitleChoice {
+                id: 3,
+                size_bytes: 103,
+            })
+        );
+    }
+
+    #[test]
+    fn a_film_stands_out_from_its_extras() {
+        let titles = [
+            title(0, "0:05:24"),
+            title(1, "2:14:08"),
+            title(2, "0:12:00"),
+        ];
+        assert_eq!(obvious_main_title(&titles).map(|choice| choice.id), Some(1));
+    }
+
+    #[test]
+    fn episodes_of_similar_length_need_a_person() {
+        let titles = [
+            title(0, "0:44:10"),
+            title(1, "0:43:50"),
+            title(2, "0:44:30"),
+        ];
+        assert_eq!(obvious_main_title(&titles), None);
+    }
+
+    #[test]
+    fn a_disc_with_no_titles_has_no_main_title() {
+        assert_eq!(obvious_main_title(&[]), None);
+    }
+}
+
+mod runtime_matching {
+    use super::*;
+
+    fn title(id: u32, duration: &str) -> DiscTitle {
+        DiscTitle {
+            id,
+            duration: duration.to_string(),
+            ..DiscTitle::default()
+        }
+    }
+
+    #[test]
+    fn picks_the_closest_title_near_the_runtime() {
+        let titles = [
+            title(0, "1:58:00"),
+            title(1, "2:01:00"),
+            title(2, "0:04:10"),
+        ];
+        assert_eq!(title_of_runtime(&titles, 7200.0), Some(1));
+    }
+
+    #[test]
+    fn no_title_near_the_runtime_gives_nothing() {
+        let titles = [title(0, "0:44:00"), title(1, "0:04:10")];
+        assert_eq!(title_of_runtime(&titles, 7200.0), None);
+    }
+}
+
+mod rip_folders {
+    use super::*;
+
+    #[test]
+    fn names_the_folder_after_the_disc() {
+        let rip_dir = tempfile::tempdir().unwrap();
+        let folder = create_rip_folder(rip_dir.path(), Some("REPLICAS")).unwrap();
+        assert_eq!(folder, rip_dir.path().join("REPLICAS"));
+        assert!(folder.is_dir());
+    }
+
+    #[test]
+    fn never_reuses_a_folder() {
+        let rip_dir = tempfile::tempdir().unwrap();
+        create_rip_folder(rip_dir.path(), Some("REPLICAS")).unwrap();
+        let second = create_rip_folder(rip_dir.path(), Some("REPLICAS")).unwrap();
+        assert_eq!(second, rip_dir.path().join("REPLICAS (2)"));
+    }
+
+    #[test]
+    fn a_disc_label_cannot_leave_the_rip_folder() {
+        let rip_dir = tempfile::tempdir().unwrap();
+        let folder = create_rip_folder(rip_dir.path(), Some("../../outside")).unwrap();
+        assert_eq!(folder.parent(), Some(rip_dir.path()));
+    }
+
+    #[test]
+    fn a_disc_with_no_usable_label_gets_a_plain_name() {
+        let rip_dir = tempfile::tempdir().unwrap();
+        for label in [None, Some(""), Some("...")] {
+            let folder = create_rip_folder(rip_dir.path(), label).unwrap();
+            assert_eq!(folder.parent(), Some(rip_dir.path()));
+        }
+    }
+
+    #[test]
+    fn a_missing_rip_folder_says_what_to_check() {
+        let rip_dir = tempfile::tempdir().unwrap();
+        let error = create_rip_folder(&rip_dir.path().join("absent"), Some("A")).unwrap_err();
+        assert!(
+            error.contains("Check the rip folder in Settings"),
+            "{error}"
+        );
+    }
+}
+
 mod estimates {
     use super::*;
 

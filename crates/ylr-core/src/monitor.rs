@@ -37,6 +37,7 @@ const BUNDLE_ONLY_VARIABLES: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
 const GUI_PROCESS_NAME: &str = "makemkv";
 const BACKEND_PROCESS_NAME: &str = "makemkvcon";
+const SCSI_GENERIC_ROOT: &str = "/sys/class/scsi_generic";
 /// Only these keys are ever read: settings.conf also holds the licence key.
 const READABLE_SETTINGS: [&str; 2] = ["app_DestinationDir", "app_DestinationType"];
 
@@ -97,6 +98,8 @@ pub struct Snapshot {
     pub backend_pids: BTreeSet<u32>,
     pub outputs: Vec<OutputFile>,
     pub progress_by_folder: HashMap<PathBuf, WindowProgress>,
+    /// /dev/srN paths a MakeMKV window's backend has open, so ripping them would clash.
+    pub gui_held_drives: BTreeSet<String>,
 }
 
 impl Snapshot {
@@ -208,9 +211,73 @@ fn parent_pid(proc_dir: &Path) -> Option<u32> {
     line.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// Read MakeMKV's processes and open files from /proc.
+/// Read MakeMKV's processes and open files from /proc. Rips this app runs itself are
+/// left out, because it hears how those end directly, and watching them too would
+/// report each one twice.
 pub fn take_snapshot() -> Snapshot {
-    take_snapshot_at(Path::new("/proc"), crate::autosort::now_seconds())
+    let proc_root = Path::new("/proc");
+    let snapshot = take_snapshot_at(proc_root, crate::autosort::now_seconds());
+    let mut snapshot = without_children_of(snapshot, proc_root, std::process::id());
+    snapshot.gui_held_drives = gui_held_drives(
+        proc_root,
+        Path::new(SCSI_GENERIC_ROOT),
+        &snapshot.backend_pids,
+    );
+    snapshot
+}
+
+/// Removes the backends `parent` started, and the files they are writing.
+pub fn without_children_of(mut snapshot: Snapshot, proc_root: &Path, parent: u32) -> Snapshot {
+    let is_child = |pid: u32| parent_pid(&proc_root.join(pid.to_string())) == Some(parent);
+    let children: BTreeSet<u32> = snapshot
+        .backend_pids
+        .iter()
+        .copied()
+        .filter(|pid| is_child(*pid))
+        .collect();
+    snapshot.backend_pids.retain(|pid| !children.contains(pid));
+    snapshot
+        .outputs
+        .retain(|output| !children.contains(&output.pid));
+    snapshot
+}
+
+/// The optical drive behind /dev/sgN. An idle MakeMKV window holds only this device for
+/// its drive, so /dev/srN alone would miss it.
+fn drive_of_scsi_generic(scsi_generic_root: &Path, name: &str) -> Option<String> {
+    let block_devices = fs::read_dir(scsi_generic_root.join(name).join("device/block")).ok()?;
+    let drive = block_devices
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .find(|device| device.starts_with("sr"))?;
+    Some(format!("/dev/{drive}"))
+}
+
+/// The drives these backends have open. A process can exit during the walk, and an
+/// exited process holds nothing, so a read failure is not an error here.
+pub fn gui_held_drives(
+    proc_root: &Path,
+    scsi_generic_root: &Path,
+    backend_pids: &BTreeSet<u32>,
+) -> BTreeSet<String> {
+    let mut held = BTreeSet::new();
+    for pid in backend_pids {
+        let Ok(descriptors) = fs::read_dir(proc_root.join(pid.to_string()).join("fd")) else {
+            continue;
+        };
+        for descriptor in descriptors.flatten() {
+            let Ok(target) = fs::read_link(descriptor.path()) else {
+                continue;
+            };
+            let text = target.to_string_lossy();
+            if SOURCE_DEVICE.is_match(&text) {
+                held.insert(text.into_owned());
+            } else if let Some(name) = text.strip_prefix("/dev/").filter(|n| n.starts_with("sg")) {
+                held.extend(drive_of_scsi_generic(scsi_generic_root, name));
+            }
+        }
+    }
+    held
 }
 
 /// Each MakeMKV window launches its own backend directly, so a writer's parent

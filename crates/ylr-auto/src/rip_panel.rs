@@ -87,7 +87,14 @@ pub struct RipPanel {
 
 impl RipPanel {
     pub fn new(window: &Rc<MainWindow>, rip: Rip) -> Rc<Self> {
-        let guess = core::guess_from_label(&rip.label);
+        // A match picked before ripping decides the name and kind, so nothing is asked twice.
+        let picked = window.picked_match(&rip.folder);
+        let mut guess = core::guess_from_label(&rip.label);
+        if let Some(picked) = &picked {
+            guess.title = picked.found.title.clone();
+            guess.year = picked.found.year;
+            guess.is_tv = picked.series;
+        }
 
         // Only the middle scrolls, so the search above it and the File button below it
         // stay in view however long the results are.
@@ -752,46 +759,24 @@ impl RipPanel {
                 .use_markup(false)
                 .build();
             row.add_prefix(&poster_image(item, &cache));
-            row.add_suffix(&self.cast_label(item));
+            row.add_suffix(&cast_label(
+                self.tmdb(),
+                item,
+                self.layout() == Layout::Series,
+            ));
             self.results.append(&row);
         }
         self.results.set_visible(true);
+        let picked_id = self
+            .owner()
+            .and_then(|window| window.picked_match(&self.rip.borrow().folder))
+            .map(|picked| picked.found.tmdb_id);
+        let row_to_select = found
+            .iter()
+            .position(|item| Some(item.tmdb_id) == picked_id)
+            .unwrap_or(0);
         self.results
-            .select_row(self.results.row_at_index(0).as_ref());
-    }
-
-    /// A column that fills with the lead actors once TMDb answers, and stays empty if it
-    /// does not, because the cast only helps to choose a match.
-    fn cast_label(&self, found: &Match) -> gtk::Label {
-        let label = gtk::Label::builder()
-            .xalign(0.0)
-            .valign(gtk::Align::Center)
-            .width_chars(CAST_COLUMN_CHARS)
-            .max_width_chars(CAST_COLUMN_CHARS)
-            .ellipsize(pango::EllipsizeMode::End)
-            .css_classes(["caption"])
-            .build();
-        let Some(tmdb) = self.tmdb() else {
-            return label;
-        };
-
-        let (id, title) = (found.tmdb_id, found.title.clone());
-        let series = self.layout() == Layout::Series;
-        let shown = label.clone();
-        run_in_background(
-            move || tmdb.main_cast(id, series).map_err(|e| e.to_string()),
-            move |result| match result {
-                Err(e) => log::info!("No cast for {title}: {e}"),
-                Ok(names) => {
-                    let lines: Vec<String> = names
-                        .iter()
-                        .map(|name| format!("\u{2022} {name}"))
-                        .collect();
-                    shown.set_text(&lines.join("\n"));
-                }
-            },
-        );
-        label
+            .select_row(self.results.row_at_index(row_to_select as i32).as_ref());
     }
 
     fn on_match_selected(self: &Rc<Self>, index: Option<i32>) {
@@ -1102,4 +1087,37 @@ impl RipPanel {
         self.status_label.set_visible(true);
         self.update_preview();
     }
+}
+
+/// A column that fills with the lead actors once TMDb answers, and stays empty if it
+/// does not, because the cast only helps to choose a match.
+pub fn cast_label(tmdb: Option<Arc<Tmdb>>, found: &Match, series: bool) -> gtk::Label {
+    let label = gtk::Label::builder()
+        .xalign(0.0)
+        .valign(gtk::Align::Center)
+        .width_chars(CAST_COLUMN_CHARS)
+        .max_width_chars(CAST_COLUMN_CHARS)
+        .ellipsize(pango::EllipsizeMode::End)
+        .css_classes(["caption"])
+        .build();
+    let Some(tmdb) = tmdb else {
+        return label;
+    };
+
+    let (id, title) = (found.tmdb_id, found.title.clone());
+    let shown = label.clone();
+    run_in_background(
+        move || tmdb.main_cast(id, series).map_err(|e| e.to_string()),
+        move |result| match result {
+            Err(e) => log::info!("No cast for {title}: {e}"),
+            Ok(names) => {
+                let lines: Vec<String> = names
+                    .iter()
+                    .map(|name| format!("\u{2022} {name}"))
+                    .collect();
+                shown.set_text(&lines.join("\n"));
+            }
+        },
+    );
+    label
 }

@@ -11,6 +11,8 @@
 pub mod about;
 pub mod app;
 pub mod config;
+pub mod drive_page;
+pub mod drive_row;
 pub mod logging;
 pub mod rip_panel;
 pub mod settings;
