@@ -268,6 +268,23 @@ def launcher_command(script):
     return [sys.executable, str(Path(script).resolve())]
 
 
+def install_user_icons(script, user_theme, app_id):
+    """Copy this app's icons into the user's icon theme, for an AppImage or a source
+    checkout, whose own files the panel and menu cannot see. Only files that differ
+    are written, so an unchanged icon does not make the desktop reload its theme."""
+    script = Path(script).resolve()
+    for theme in (script.parents[2] / "share/icons/hicolor", script.parent / "packaging/icons/hicolor"):
+        if theme.is_dir():
+            break
+    else:
+        return
+    for source in theme.rglob(f"{app_id}*"):
+        target = user_theme / source.relative_to(theme)
+        if not target.exists() or target.read_bytes() != source.read_bytes():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+
+
 def desktop_exec_quote(argument):
     """Quote one Exec argument. The Desktop Entry spec allows only double
     quotes, with these characters escaped inside them."""

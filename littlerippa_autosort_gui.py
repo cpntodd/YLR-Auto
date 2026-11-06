@@ -39,6 +39,25 @@ LEGACY_APP_ID = "local.LittleRippaAutosort"
 APP_NAME = "YLR-Auto"
 BACKGROUND_FLAG = "--background"
 INSTALL_GUIDE_URL = "https://forum.makemkv.com/forum/viewtopic.php?t=224"
+AUTHOR_URL = "https://github.com/cpntodd"
+AUTHOR_SITE_URL = "https://cpntodd.github.io/cpntodd/"
+SOURCE_URL = f"{AUTHOR_URL}/YLR-Auto"
+ABOUT_BIO = ("Made by oddsoul (cpntodd), vibe-coding from Perth, Western Australia. "
+             "Open source, and built to scratch my own itches.")
+ABOUT_PROJECTS = (
+    ("HOI4-MCP", "Turns any AI coding assistant into a Hearts of Iron IV modding expert."),
+    ("MCPSaver", "A local MCP server that learns from your project and provides relevant context."),
+    ("Mounter", "Scan for your SMB server and click mount, with no manual fstab editing."),
+    ("album-detective", "Compares your local music library against online collections "
+                        "such as Spotify to find missing discography."),
+)
+LOGO_VIDEO = Path(__file__).resolve().with_name("oddly_cartouche.webm")
+# Half the video's 1280x720, which is sharp on high-density screens too.
+LOGO_SIZE = (640, 360)
+ABOUT_WINDOW_HEIGHT = 760
+# GTK blanks a video that reaches its end, so the logo pauses just before it, on the
+# held final image. Wide enough to catch GTK's position updates, 100 ms apart.
+LOGO_HOLD_BEFORE_END_US = 150_000
 SCAN_INTERVAL_SECONDS = 30
 MONITOR_INTERVAL_SECONDS = 2
 # Drive state changes rarely and each drive read costs a udevadm subprocess.
@@ -49,16 +68,18 @@ LOG_SCROLL_DELAY_MS = 150
 LOG_FILE_BYTES = 1_000_000
 LOG_FILE_BACKUPS = 2
 TRAY_SCRIPT = Path(__file__).resolve().with_name("littlerippa_tray.py")
-ICON_IDLE = "media-optical-symbolic"
-ICON_RIPPING = "media-record-symbolic"
+ICON_IDLE = f"{APP_ID}-symbolic"
+ICON_RIPPING = f"{APP_ID}-ripping-symbolic"
 # Gtk.Image fits a poster inside a square of this size, keeping its shape.
 POSTER_DISPLAY_PIXELS = 60
-# Twice the thumbnail, still within the 92x138 image TMDb supplies, so the preview
-# needs no second download.
-POSTER_PREVIEW_PIXELS = POSTER_DISPLAY_PIXELS * 2
+# Fits a laptop screen, and stays within the 500x750 image downloaded for the preview.
+POSTER_PREVIEW_PIXELS = 600
 POSTER_PREVIEW_DELAY_MS = 2000
 POSTER_PLACEHOLDER_PIXELS = 32
 POSTER_PLACEHOLDER_ICON = "video-x-generic-symbolic"
+# Wide enough for most names; the column keeps this width while the cast loads so
+# the overview beside it does not reflow.
+CAST_COLUMN_CHARS = 24
 # VSCodium's Dark+ palette, mapped onto libadwaita's colour variables so every
 # standard widget follows it. Dim text is raised from libadwaita's default
 # opacity, which falls below 4.5:1 contrast on these greys.
@@ -130,6 +151,8 @@ DEFAULT_CONFIG = {
     "eject_when_finished": False,
     "start_at_login": True,
     "use_system_theme": False,
+    "log_collapsed": False,
+    "about_logo_muted": False,
     "tmdb_tag": core.TMDB_TAG_NONE,
     "libraries": {
         "movies": str(Path.home() / "Media" / "Movies"),
@@ -175,7 +198,7 @@ def desktop_entry_text(arguments=()):
             f"Name={APP_NAME}\n"
             "Comment=Watch MakeMKV and file finished rips into Jellyfin\n"
             f"Exec={command}\n"
-            "Icon=media-optical\n"
+            f"Icon={APP_ID}\n"
             "Categories=AudioVideo;Video;\n"
             "Terminal=false\n")
 
@@ -189,6 +212,7 @@ def sync_desktop_entries(start_at_login):
         if not monitor.is_system_install(__file__):
             MENU_ENTRY.parent.mkdir(parents=True, exist_ok=True)
             MENU_ENTRY.write_text(desktop_entry_text())
+            monitor.install_user_icons(__file__, DATA_HOME / "icons" / "hicolor", APP_ID)
         if start_at_login:
             AUTOSTART_ENTRY.parent.mkdir(parents=True, exist_ok=True)
             AUTOSTART_ENTRY.write_text(desktop_entry_text((BACKGROUND_FLAG,)))
@@ -306,10 +330,10 @@ def labelled(text, widget):
     return box
 
 
-class PosterPreviewImage(Gtk.Widget):
+class ExactSizePaintable(Gtk.Widget):
     """A paintable drawn at an exact size. Gtk.Image always reserves a square, which
     would leave bars beside a portrait poster, and Gtk.Picture asks for the image's
-    own 92x138 pixels."""
+    own pixel size."""
 
     def __init__(self):
         super().__init__()
@@ -336,8 +360,29 @@ def fitted_poster_size(texture, box_pixels):
     return box_pixels * min(1, aspect), box_pixels * min(1, 1 / aspect)
 
 
+def load_poster(match, size, on_loaded):
+    """Fetch a poster off the GUI thread, then pass its texture to on_loaded. A missing
+    poster costs only the picture, so a failure is logged and on_loaded is not called."""
+    def done(data, error):
+        if error:
+            log.info("No poster for %s: %s", match.title, error)
+            return
+        try:
+            texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+        except GLib.Error as e:
+            log.info("Could not read the poster for %s: %s", match.title, e.message)
+            return
+        on_loaded(texture)
+
+    run_in_background(lambda: core.fetch_poster(match.poster_path, POSTER_CACHE, size), done)
+
+
 class PosterPreview:
-    """Shows a poster at twice its size once the pointer has rested on it.
+    """Shows a large poster once the pointer has rested on the thumbnail.
+
+    The large image downloads only when the pointer starts to rest, so a search does
+    not fetch a large poster per result. Until it arrives the preview shows the
+    thumbnail's image enlarged.
 
     The thumbnail's widget is a square wider than a portrait poster, so the pointer
     position is checked against the drawn image, not the widget. The popover sits
@@ -345,11 +390,13 @@ class PosterPreview:
     flicker, or take keyboard input from the search box.
     """
 
-    def __init__(self, thumbnail):
+    def __init__(self, thumbnail, match):
         self.thumbnail = thumbnail
+        self.match = match
         self.texture = None
         self.delay_source = None
-        self.image = PosterPreviewImage()
+        self.large_requested = False
+        self.image = ExactSizePaintable()
         self.popover = Gtk.Popover(child=self.image, autohide=False, has_arrow=False,
                                    position=Gtk.PositionType.RIGHT, can_focus=False)
         self.popover.set_parent(thumbnail)
@@ -365,7 +412,15 @@ class PosterPreview:
 
     def set_texture(self, texture):
         self.texture = texture
+        self._show_in_preview(texture)
+
+    def _show_in_preview(self, texture):
         self.image.set_paintable(texture, *fitted_poster_size(texture, POSTER_PREVIEW_PIXELS))
+
+    def _request_large_poster(self):
+        if not self.large_requested:
+            self.large_requested = True
+            load_poster(self.match, core.POSTER_SIZE_PREVIEW, self._show_in_preview)
 
     def _pointer_is_on_poster(self, x, y):
         if self.texture is None:
@@ -379,6 +434,7 @@ class PosterPreview:
             self._hide()
         elif self.delay_source is None and not self.popover.get_visible():
             self.delay_source = GLib.timeout_add(POSTER_PREVIEW_DELAY_MS, self._on_delay_over)
+            self._request_large_poster()
 
     def _on_delay_over(self):
         self.delay_source = None
@@ -429,9 +485,17 @@ class RipPanel:
     # Layout
 
     def _build(self):
+        # Only the middle scrolls, so the search above it and the File button below it
+        # stay in view however long the results are.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
-                      margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
-        self.widget = box
+                      margin_top=18, margin_bottom=12, margin_start=18, margin_end=18)
+        scrolling = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                            margin_top=12, margin_bottom=12, margin_start=18, margin_end=18)
+        footer = Gtk.Box(spacing=12, margin_top=12, margin_bottom=12, margin_start=18, margin_end=18)
+        self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        for widget in (box, Gtk.Separator(), Gtk.ScrolledWindow(child=scrolling, vexpand=True),
+                       Gtk.Separator(), footer):
+            self.widget.append(widget)
 
         heading = Gtk.Label(label=self.rip.label, xalign=0, wrap=True, css_classes=["title-2"])
         self.state_label = Gtk.Label(xalign=0, wrap=True, css_classes=["dim-label"])
@@ -475,7 +539,7 @@ class RipPanel:
         self.results = Gtk.ListBox(css_classes=["boxed-list"])
         self.results.connect("row-selected", self._on_match_selected)
         box.append(self.results_note)
-        box.append(self.results)
+        scrolling.append(self.results)
 
         self.season_spin = Gtk.SpinButton.new_with_range(0, 99, 1)
         self.season_spin.set_value(self.guess.season or 1)
@@ -485,18 +549,23 @@ class RipPanel:
         self.series_row = labelled("Season", self.season_spin)
         self.series_row.append(Gtk.Label(label="First episode"))
         self.series_row.append(self.first_episode_spin)
-        box.append(self.series_row)
+        scrolling.append(self.series_row)
 
         self.titles_grid = Gtk.Grid(column_spacing=14, row_spacing=6)
-        box.append(self.titles_grid)
+        scrolling.append(self.titles_grid)
 
         self.preview_label = Gtk.Label(xalign=0, wrap=True, selectable=True)
-        self.status_label = Gtk.Label(xalign=0, wrap=True, selectable=True, css_classes=["error"])
-        self.file_button = Gtk.Button(label="File", halign=Gtk.Align.END,
+        self.status_label = Gtk.Label(xalign=0, wrap=True, selectable=True, visible=False,
+                                      css_classes=["error"])
+        self.file_button = Gtk.Button(label="File", valign=Gtk.Align.CENTER,
                                       css_classes=["suggested-action", "pill"])
         self.file_button.connect("clicked", self._file)
-        for widget in (self.preview_label, self.status_label, self.file_button):
-            box.append(widget)
+        outcome = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True,
+                          valign=Gtk.Align.CENTER)
+        outcome.append(self.preview_label)
+        outcome.append(self.status_label)
+        footer.append(outcome)
+        footer.append(self.file_button)
 
     # State read from the widgets
 
@@ -715,6 +784,7 @@ class RipPanel:
             row = Adw.ActionRow(title=f"{match.title} ({match.year or 'year unknown'})",
                                 subtitle=match.overview, subtitle_lines=2, use_markup=False)
             row.add_prefix(self._poster_for(match))
+            row.add_suffix(self._cast_for(match))
             self.results.append(row)
         self.results.set_visible(True)
         self.results.select_row(self.results.get_row_at_index(0))
@@ -728,23 +798,32 @@ class RipPanel:
         image.update_property([Gtk.AccessibleProperty.LABEL], [f"Poster for {match.title}"])
         if not match.poster_path:
             return image
-        preview = PosterPreview(image)
+        preview = PosterPreview(image, match)
 
-        def done(data, error):
-            if error:
-                log.info("No poster for %s: %s", match.title, error)
-                return
-            try:
-                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
-            except GLib.Error as e:
-                log.info("Could not read the poster for %s: %s", match.title, e.message)
-                return
+        def show(texture):
             image.set_from_paintable(texture)
             image.set_pixel_size(POSTER_DISPLAY_PIXELS)
             preview.set_texture(texture)
 
-        run_in_background(lambda: core.fetch_poster(match.poster_path, POSTER_CACHE), done)
+        load_poster(match, core.POSTER_SIZE_THUMBNAIL, show)
         return image
+
+    def _cast_for(self, match):
+        """A column that fills with the lead actors once TMDb answers, and stays
+        empty if it does not, because the cast only helps to choose a match."""
+        label = Gtk.Label(xalign=0, valign=Gtk.Align.CENTER, width_chars=CAST_COLUMN_CHARS,
+                          max_width_chars=CAST_COLUMN_CHARS, ellipsize=Pango.EllipsizeMode.END,
+                          css_classes=["caption"])
+
+        def done(names, error):
+            if error:
+                log.info("No cast for %s: %s", match.title, error)
+                return
+            label.set_text("\n".join(f"\u2022 {name}" for name in names))
+
+        tmdb, series = self.window.tmdb, self.layout == SERIES
+        run_in_background(lambda: tmdb.main_cast(match.tmdb_id, series), done)
+        return label
 
     def _on_match_selected(self, _listbox, row):
         self.match = self.matches[row.get_index()] if row else None
@@ -864,7 +943,7 @@ class RipPanel:
     # Filing
 
     def _file(self, _button):
-        self.status_label.set_text("")
+        self.status_label.set_visible(False)
         root = self._library_root()
         name, year = self._name_and_year()
         chosen = self._chosen_rows()
@@ -907,6 +986,7 @@ class RipPanel:
 
     def _show_error(self, message):
         self.status_label.set_text(message)
+        self.status_label.set_visible(True)
         self._update_preview()
 
 
@@ -999,6 +1079,14 @@ class SettingsDialog(Adw.PreferencesDialog):
             self.library_rows[destination.key] = row
         page.add(folders)
 
+        about = Adw.PreferencesGroup(title="About")
+        about_row = Adw.ActionRow(title=APP_NAME, subtitle=f"Version {core.VERSION}")
+        about_button = Gtk.Button(label="About", valign=Gtk.Align.CENTER)
+        about_button.connect("clicked", lambda _button: window.show_about())
+        about_row.add_suffix(about_button)
+        about.add(about_row)
+        page.add(about)
+
         self.connect("closed", self._save)
 
     def _show_poster_cache_usage(self):
@@ -1038,15 +1126,147 @@ class SettingsDialog(Adw.PreferencesDialog):
         config["tmdb_tag"] = TMDB_TAG_CHOICES[self.tmdb_tag_row.get_selected()][0]
         for key, row in self.library_rows.items():
             config["libraries"][key] = row.get_text().strip()
-        try:
-            save_config(config)
-        except OSError as e:
-            log.error("Could not save settings to %s: %s", CONFIG_PATH, e)
+        self.window.save_settings()
         sync_desktop_entries(config["start_at_login"])
         self.window.get_application().theme.apply(config["use_system_theme"])
         self.window.apply_config()
         if config["tmdb_tag"] != previous_tag:
             self.window.refresh_destinations()
+
+
+class AboutWindow(Adw.Window):
+    """Plays the logo once when opened and holds its last image, then a click on it
+    plays it again."""
+
+    def __init__(self, main_window):
+        super().__init__(title=f"About {APP_NAME}", transient_for=main_window,
+                         default_width=LOGO_SIZE[0], default_height=ABOUT_WINDOW_HEIGHT)
+        self.main_window = main_window
+        self.finished = False
+
+        self.media = Gtk.MediaFile.new_for_filename(str(LOGO_VIDEO))
+        self.media.set_muted(main_window.config["about_logo_muted"])
+        self.media.connect("notify::prepared", self._on_prepared)
+        self.media.connect("notify::timestamp", self._on_timestamp)
+        self.media.connect("notify::ended", self._on_ended)
+        self.media.connect("notify::error", self._on_error)
+
+        self.logo = ExactSizePaintable()
+        self.logo.set_paintable(self.media, *LOGO_SIZE)
+        # ExactSizePaintable keeps a still image, so a moving one has to ask for redraws.
+        self.media.connect("invalidate-contents", lambda _media: self.logo.queue_draw())
+        self.logo_button = Gtk.Button(child=self.logo, halign=Gtk.Align.CENTER,
+                                      css_classes=["flat"])
+        self.logo_button.update_property([Gtk.AccessibleProperty.LABEL], ["Play the logo again"])
+        self.logo_button.connect("clicked", self._on_logo_clicked)
+        self.logo_note = Gtk.Label(label="The logo cannot play because GStreamer's video "
+                                         "support is not installed.",
+                                   wrap=True, visible=False, margin_top=18, margin_start=18,
+                                   margin_end=18, css_classes=["dim-label"])
+
+        self.mute_button = Gtk.Button()
+        self.mute_button.connect("clicked", self._on_mute_clicked)
+        self._show_mute_state()
+        header = Adw.HeaderBar()
+        header.pack_start(self.mute_button)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self.logo_button)
+        content.append(self.logo_note)
+        content.append(Gtk.ScrolledWindow(child=self._build_details(), vexpand=True,
+                                          hscrollbar_policy=Gtk.PolicyType.NEVER))
+        toolbar = Adw.ToolbarView(content=content)
+        toolbar.add_top_bar(header)
+        self.set_content(toolbar)
+
+        self.connect("close-request", self._on_close_request)
+        self._on_prepared()
+        self._on_error()
+
+    def _build_details(self):
+        details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=18,
+                          margin_bottom=18, margin_start=18, margin_end=18)
+        details.append(Gtk.Label(label=f"{APP_NAME} {core.VERSION}", xalign=0,
+                                 css_classes=["title-2"]))
+        details.append(Gtk.Label(label="A companion for MakeMKV that files finished rips "
+                                       "into Jellyfin.", xalign=0, wrap=True))
+        details.append(Gtk.Label(label=ABOUT_BIO, xalign=0, wrap=True))
+        links = Gtk.Box(spacing=6)
+        for label, uri in (("GitHub", AUTHOR_URL), ("Website", AUTHOR_SITE_URL),
+                           (f"{APP_NAME} source", SOURCE_URL)):
+            links.append(Gtk.LinkButton(uri=uri, label=label))
+        details.append(links)
+
+        details.append(Gtk.Label(label="More of my work", xalign=0, css_classes=["heading"]))
+        projects = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        for name, summary in ABOUT_PROJECTS:
+            row = Adw.ActionRow(title=name, subtitle=summary, use_markup=False)
+            link = Gtk.LinkButton(uri=f"{AUTHOR_URL}/{name}", label="GitHub",
+                                  valign=Gtk.Align.CENTER)
+            row.add_suffix(link)
+            row.set_activatable_widget(link)
+            projects.append(row)
+        details.append(projects)
+        details.append(Gtk.Label(label="Copyright 2026 cpntodd. Released under the MIT License.",
+                                 xalign=0, wrap=True, css_classes=["dim-label", "caption"]))
+        return details
+
+    def _on_prepared(self, *_):
+        """GTK ignores play() until the file has been opened, which happens off-thread."""
+        if self.media.is_prepared():
+            self.media.play()
+
+    def _hold_point(self):
+        return self.media.get_duration() - LOGO_HOLD_BEFORE_END_US
+
+    def _on_timestamp(self, *_):
+        if self.media.get_playing() and self.media.get_timestamp() >= self._hold_point():
+            self.media.pause()
+            self._show_finished(True)
+
+    def _on_ended(self, *_):
+        """Only if playback ran past the hold point, as a stall can do: bring the picture back."""
+        if self.media.get_ended():
+            self.media.seek(self._hold_point())
+            self._show_finished(True)
+
+    def _show_finished(self, finished):
+        self.finished = finished
+        self.logo_button.set_tooltip_text("Play again" if finished else None)
+        self.logo_button.set_cursor_from_name("pointer" if finished else None)
+
+    def _on_logo_clicked(self, _button):
+        if self.finished:
+            self._show_finished(False)
+            self.media.seek(0)
+            self.media.play()
+
+    def _on_error(self, *_):
+        error = self.media.get_error()
+        if error:
+            log.warning("Could not play the logo: %s", error.message)
+            self.logo_button.set_visible(False)
+            self.logo_note.set_visible(True)
+            self.mute_button.set_visible(False)
+
+    def _show_mute_state(self):
+        muted = self.media.get_muted()
+        self.mute_button.set_icon_name("audio-volume-muted-symbolic" if muted
+                                       else "audio-volume-high-symbolic")
+        self.mute_button.set_tooltip_text("Turn the sound on" if muted else "Mute")
+
+    def _on_mute_clicked(self, _button):
+        self.media.set_muted(not self.media.get_muted())
+        self._show_mute_state()
+        self.main_window.config["about_logo_muted"] = self.media.get_muted()
+        self.main_window.save_settings()
+
+    def _on_close_request(self, _window):
+        """Sound must stop with the window, not when Python next collects it."""
+        self.media.pause()
+        self.media.clear()
+        self.main_window.about_window = None
+        return False
 
 
 class MonitorCard:
@@ -1246,6 +1466,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.review_notes = {}       # folder -> why the rip waits for a person
         self.told_still_running = False
         self.makemkv_destination = None
+        self.about_window = None
 
         header = Adw.HeaderBar()
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Scan now")
@@ -1277,16 +1498,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.empty_page = Adw.StatusPage(title="Select a rip",
                                          description="Finished rips in the rip folder appear on the left.",
                                          icon_name="media-optical-symbolic")
-        self.detail = Gtk.ScrolledWindow(child=self.empty_page, hexpand=True)
+        self.detail = Adw.Bin(child=self.empty_page, hexpand=True)
 
         log_view = Gtk.TextView(editable=False, monospace=True, cursor_visible=False,
                                 wrap_mode=Gtk.WrapMode.WORD_CHAR,
                                 left_margin=8, top_margin=6, bottom_margin=6)
         # With the default AUTOMATIC horizontal policy, the window grew as wrapped
         # log lines arrived. The text wraps, so it never needs a horizontal scrollbar.
-        log_scroller = Gtk.ScrolledWindow(child=log_view, height_request=120,
-                                          hscrollbar_policy=Gtk.PolicyType.NEVER)
-        log.addHandler(TextViewLogHandler(log_view.get_buffer(), log_scroller.get_vadjustment()))
+        self.log_scroller = Gtk.ScrolledWindow(child=log_view, height_request=120,
+                                               hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.log_handler = TextViewLogHandler(log_view.get_buffer(),
+                                              self.log_scroller.get_vadjustment())
+        log.addHandler(self.log_handler)
         add_log_file()
         log.setLevel(logging.INFO)
 
@@ -1294,13 +1517,20 @@ class MainWindow(Adw.ApplicationWindow):
                         shrink_start_child=False)
         # Extra height goes to the rips, so the log keeps its size at any window
         # height and however tall the monitor card grows during several rips.
-        body = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, start_child=top,
-                         end_child=log_scroller, resize_end_child=False, shrink_end_child=False)
-        self.toasts = Adw.ToastOverlay(child=body)
+        self.body = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, start_child=top,
+                              end_child=self.log_scroller, resize_end_child=False,
+                              shrink_end_child=False)
+        self.log_toggle_content = Adw.ButtonContent()
+        log_toggle = Gtk.Button(child=self.log_toggle_content, halign=Gtk.Align.START,
+                                css_classes=["flat"])
+        log_toggle.connect("clicked", self._on_log_toggled)
+        self._show_log(not self.config["log_collapsed"])
+        self.toasts = Adw.ToastOverlay(child=self.body)
         toolbar = Adw.ToolbarView(content=self.toasts)
         toolbar.add_top_bar(header)
         toolbar.add_top_bar(self.banner)
         toolbar.add_top_bar(self.folder_banner)
+        toolbar.add_bottom_bar(log_toggle)
         self.set_content(toolbar)
 
         self.connect("close-request", self._on_close_request)
@@ -1334,12 +1564,37 @@ class MainWindow(Adw.ApplicationWindow):
                                          f"watches {self.config['rip_dir']}.")
         self.folder_banner.set_revealed(differs)
 
-    def _use_makemkv_folder(self, _banner):
-        self.config["rip_dir"] = self.makemkv_destination
+    def _show_log(self, shown):
+        """A hidden child gives its whole height to the rips, and the pane remembers
+        its size for when the log returns. Alone in the pane, the rips cannot shrink
+        below their minimum, or GTK warns about measuring them too short."""
+        self.log_scroller.set_visible(shown)
+        self.body.set_shrink_start_child(shown)
+        self.log_toggle_content.set_label("Hide log" if shown else "Show log")
+        self.log_toggle_content.set_icon_name("pan-down-symbolic" if shown else "pan-up-symbolic")
+
+    def _on_log_toggled(self, _button):
+        shown = not self.log_scroller.get_visible()
+        self._show_log(shown)
+        if shown:   # lines that arrived while hidden did not scroll it
+            GLib.timeout_add(LOG_SCROLL_DELAY_MS, self.log_handler._scroll_to_end)
+        self.config["log_collapsed"] = not shown
+        self.save_settings()
+
+    def save_settings(self):
         try:
             save_config(self.config)
         except OSError as e:
             log.error("Could not save settings to %s: %s", CONFIG_PATH, e)
+
+    def show_about(self):
+        if self.about_window is None:
+            self.about_window = AboutWindow(self)
+        self.about_window.present()
+
+    def _use_makemkv_folder(self, _banner):
+        self.config["rip_dir"] = self.makemkv_destination
+        self.save_settings()
         self.apply_config()
 
     def toast(self, message, button_label=None, on_button=None):
@@ -1686,6 +1941,7 @@ class App(Adw.Application):
 
     def do_activate(self):
         if self.window is None:
+            Gtk.Window.set_default_icon_name(APP_ID)
             self.window = MainWindow(self)
         if self.start_hidden:
             self.start_hidden = False
@@ -1702,6 +1958,7 @@ class App(Adw.Application):
     def notify(self, notification_id, title, body, folder=None):
         notification = Gio.Notification.new(title)
         notification.set_body(body)
+        notification.set_icon(Gio.ThemedIcon.new(APP_ID))
         if folder:
             notification.set_default_action_and_target("app.show-rip", GLib.Variant("s", str(folder)))
         else:

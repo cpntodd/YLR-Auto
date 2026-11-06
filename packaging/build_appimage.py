@@ -23,9 +23,15 @@ ROOT = Path(__file__).resolve().parent.parent
 APP_ID = "io.github.cpntodd.YLRAuto"
 MODULES = ("littlerippa_autosort.py", "littlerippa_autosort_gui.py",
            "littlerippa_monitor.py", "littlerippa_tray.py")
+LOGO_VIDEO = "oddly_cartouche.webm"
 MULTIARCH = Path("/usr/lib/x86_64-linux-gnu")
 PYTHON = "python3.13"
 ICON_PIXELS = 256
+# Only what the About window's logo needs: WebM, VP9, Opus, and sound through
+# PulseAudio, which PipeWire also serves.
+GSTREAMER_PLUGINS = ("audioconvert", "audiofx", "audioresample", "autodetect", "coreelements",
+                     "matroska", "opus", "playback", "pulseaudio", "typefindfunctions",
+                     "videoconvertscale", "volume", "vpx")
 
 # Loaded by dlopen, so following ldd alone would miss them: typelibs name their
 # library at runtime, and glibc loads libgcc_s to cancel threads.
@@ -125,6 +131,17 @@ def install_data(usr):
     (usr / "lib/gio/modules").mkdir(parents=True)
 
 
+def install_media(usr):
+    """GTK's video backend and GStreamer. Following ldd from these finds their libraries."""
+    backend = usr / "lib/gtk-4.0/4.0.0/media"
+    backend.mkdir(parents=True)
+    shutil.copy2(MULTIARCH / "gtk-4.0/4.0.0/media/libmedia-gstreamer.so", backend)
+    plugins = usr / "lib/gstreamer-1.0"
+    plugins.mkdir(parents=True)
+    for name in GSTREAMER_PLUGINS:
+        shutil.copy2(MULTIARCH / f"gstreamer-1.0/libgst{name}.so", plugins)
+
+
 def render_icon(svg, png):
     """appimagetool makes .DirIcon from this file, and requires it to be a PNG.
     Imported here because only this step needs GdkPixbuf on the build system."""
@@ -141,13 +158,13 @@ def install_app(appdir):
     app.mkdir(parents=True)
     for module in MODULES:
         shutil.copy2(ROOT / module, app)
+    shutil.copy2(ROOT / LOGO_VIDEO, app)
     packaging = ROOT / "packaging"
     shutil.copy2(packaging / "AppRun", appdir / "AppRun")
     shutil.copy2(packaging / f"{APP_ID}.desktop", appdir)
-    render_icon(packaging / f"{APP_ID}.svg", appdir / f"{APP_ID}.png")
-    icons = usr / "share/icons/hicolor/scalable/apps"
-    icons.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(packaging / f"{APP_ID}.svg", icons)
+    icons = packaging / "icons/hicolor"
+    render_icon(icons / f"scalable/apps/{APP_ID}.svg", appdir / f"{APP_ID}.png")
+    copy_tree(icons, usr / "share/icons/hicolor")
     applications = usr / "share/applications"
     applications.mkdir(parents=True, exist_ok=True)
     shutil.copy2(packaging / f"{APP_ID}.desktop", applications)
@@ -189,6 +206,7 @@ def main():
     install_introspection(usr)
     install_pixbuf_loaders(usr)
     install_data(usr)
+    install_media(usr)
     install_app(appdir)
     bundle_libraries(usr)
     make_executable(usr / "bin/ylr-python")

@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 import unittest.mock
+import urllib.error
 from pathlib import Path
 
 import littlerippa_autosort as m
@@ -700,6 +701,104 @@ class PosterTest(unittest.TestCase):
         with self.network_returning(body):
             found = m.Tmdb("key").search_shows("A")
         self.assertEqual([match.poster_path for match in found], ["/p.jpg", None])
+
+    def test_each_size_downloads_and_caches_separately(self):
+        with self.network_returning(b"small") as urlopen:
+            self.assertEqual(m.fetch_poster("/a1.jpg", self.cache), b"small")
+            urlopen.return_value.__enter__.return_value = io.BytesIO(b"large")
+            self.assertEqual(m.fetch_poster("/a1.jpg", self.cache, m.POSTER_SIZE_PREVIEW), b"large")
+            self.assertEqual(m.fetch_poster("/a1.jpg", self.cache), b"small")
+        self.assertEqual(urlopen.call_args[0][0], "https://image.tmdb.org/t/p/w500/a1.jpg")
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_clearing_removes_every_size(self):
+        with self.network_returning(b"image") as urlopen:
+            m.fetch_poster("/a1.jpg", self.cache)
+            urlopen.return_value.__enter__.return_value = io.BytesIO(b"image")
+            m.fetch_poster("/a1.jpg", self.cache, m.POSTER_SIZE_PREVIEW)
+        self.assertEqual(m.poster_cache_usage(self.cache)[0], 2)
+        m.clear_poster_cache(self.cache)
+        self.assertEqual(m.poster_cache_usage(self.cache)[0], 0)
+
+
+class UserIconsTest(unittest.TestCase):
+    APP_ID = "io.github.cpntodd.YLRAuto"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.script = root / "usr/lib/ylr-auto/app.py"
+        self.script.parent.mkdir(parents=True)
+        self.script.touch()
+        self.theme = root / "usr/share/icons/hicolor"
+        self.user_theme = root / "home/icons/hicolor"
+        self.icon = self.theme / f"scalable/apps/{self.APP_ID}.svg"
+        self.icon.parent.mkdir(parents=True)
+        self.icon.write_text("new")
+        (self.icon.parent / "someone-elses.svg").write_text("other")
+
+    def install(self):
+        monitor.install_user_icons(self.script, self.user_theme, self.APP_ID)
+
+    def test_copies_only_this_apps_icons(self):
+        self.install()
+        copied = [p.name for p in self.user_theme.rglob("*") if p.is_file()]
+        self.assertEqual(copied, [f"{self.APP_ID}.svg"])
+
+    def test_replaces_a_stale_icon(self):
+        self.install()
+        self.icon.write_text("newer")
+        self.install()
+        self.assertEqual((self.user_theme / f"scalable/apps/{self.APP_ID}.svg").read_text(), "newer")
+
+    def test_leaves_an_unchanged_icon_alone(self):
+        self.install()
+        target = self.user_theme / f"scalable/apps/{self.APP_ID}.svg"
+        os.utime(target, (1, 1))
+        self.install()
+        self.assertEqual(target.stat().st_mtime, 1)
+
+    def test_nothing_to_copy_is_not_an_error(self):
+        lone = Path(self.tmp.name) / "lone/a/b/app.py"
+        lone.parent.mkdir(parents=True)
+        monitor.install_user_icons(lone, self.user_theme, self.APP_ID)
+        self.assertFalse(self.user_theme.exists())
+
+    def test_the_repository_has_every_icon_the_app_names(self):
+        theme = Path(__file__).resolve().parent / "packaging/icons/hicolor"
+        for name in (f"scalable/apps/{self.APP_ID}.svg", f"16x16/apps/{self.APP_ID}.svg",
+                     f"symbolic/apps/{self.APP_ID}-symbolic.svg",
+                     f"symbolic/apps/{self.APP_ID}-ripping-symbolic.svg"):
+            self.assertTrue((theme / name).is_file(), name)
+
+
+class MainCastTest(unittest.TestCase):
+    def cast_from(self, body, series=False):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = io.BytesIO(json.dumps(body).encode())
+        with unittest.mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+            names = m.Tmdb("key").main_cast(7, series)
+        return names, urlopen.call_args[0][0].full_url
+
+    def test_film_names_the_top_billed_actors_in_order(self):
+        people = [{"name": f"Actor {n}"} for n in range(m.MAIN_CAST_SIZE + 2)]
+        names, url = self.cast_from({"cast": people})
+        self.assertEqual(names, [f"Actor {n}" for n in range(m.MAIN_CAST_SIZE)])
+        self.assertIn("/movie/7/credits", url)
+
+    def test_series_uses_credits_from_every_season(self):
+        _names, url = self.cast_from({"cast": []}, series=True)
+        self.assertIn("/tv/7/aggregate_credits", url)
+
+    def test_missing_names_are_skipped(self):
+        names, _url = self.cast_from({"cast": [{"name": ""}, {}, {"name": "Lady Gaga"}]})
+        self.assertEqual(names, ["Lady Gaga"])
+
+    def test_film_unknown_to_tmdb_has_no_cast(self):
+        error = urllib.error.HTTPError("url", 404, "Not Found", None, None)
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=error):
+            self.assertEqual(m.Tmdb("key").main_cast(7), [])
 
 
 if __name__ == "__main__":

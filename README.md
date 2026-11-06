@@ -5,7 +5,7 @@ what MakeMKV and your optical drives are doing, then files finished rips into
 [Jellyfin](https://jellyfin.org/) libraries, with names and posters from
 [TMDb](https://www.themoviedb.org/).
 
-![YLR-Auto showing a rip in progress and TMDb matches for a finished one](docs/screenshot.png)
+![YLR-Auto with three finished rips waiting, showing TMDb matches with posters and main actors for one of them](docs/screenshot.png)
 
 YLR-Auto watches MakeMKV from the outside and does not control it. MakeMKV is a
 separate program that you install yourself. This project is not affiliated with
@@ -17,14 +17,14 @@ Download a package from the [releases page](https://github.com/cpntodd/YLR-Auto/
 
 **Debian 13, Ubuntu 24.04 or newer (.deb)**
 
-    sudo apt install ./ylr-auto_1.0.2_all.deb
+    sudo apt install ./ylr-auto_1.0.4_all.deb
 
 Ubuntu 24.04 meets the package's version requirements, but has not been tested.
 
 **Other x86-64 distributions (AppImage)**
 
-    chmod +x YLR-Auto-1.0.2-x86_64.AppImage
-    ./YLR-Auto-1.0.2-x86_64.AppImage
+    chmod +x YLR-Auto-1.0.4-x86_64.AppImage
+    ./YLR-Auto-1.0.4-x86_64.AppImage
 
 The AppImage bundles Python, GTK and libadwaita, so it needs nothing else
 installed. It has been tested only on Debian 13, and uses software rendering.
@@ -106,14 +106,18 @@ Select a rip, then:
 
    Labels such as `ANGEL_S1_D2` or `Angel/S1` default to Shows, season 1.
 2. **Name**: guessed from the disc label. Search TMDb and pick the match, using the
-   poster beside each result, or edit the name to use it as typed. Rest the pointer on a
-   poster for 2 seconds to see it at twice the size. Posters are cached
+   poster and main actors beside each result, or edit the name to use it as typed. Rest
+   the pointer on a poster for 2 seconds to see it large. Posters are cached
    in `~/.cache/littlerippa-autosort/posters`, which **Settings, Cache** can clear.
+
+   ![A large poster shown over the TMDb results](docs/screenshot-poster.png)
+
 3. **Titles**: in film layout the largest title is ticked as the main feature. In
    series layout the episode-length titles are ticked and numbered in disc order,
    starting after the highest episode already in the season folder, so disc 2 carries
    on from disc 1. Edit the numbers if the disc order is wrong.
-4. **File**: the preview line shows exactly where each file will go.
+4. **File**: the line beside the button, which stays in view below the results, shows
+   exactly where each file will go.
 
 Titles left behind (extras, "play all") stay in the rip folder, which is marked with
 `.autosort-done` and no longer listed.
@@ -165,6 +169,13 @@ Episodes: an episode number that already exists in the season folder is skipped 
 in the rip folder, never deleted, because episodes of one show share a runtime.
 
 The library copy is never touched.
+
+## About
+
+**Settings, About** opens a window that plays the Oddly Software logo with sound once.
+Click the logo to play it again, or use the button at the top left to mute it.
+
+![The About window, with the Oddly Software logo above details of the author and other projects](docs/screenshot-about.png)
 
 ## Build and test
 

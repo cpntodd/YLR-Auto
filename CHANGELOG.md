@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.4 (2026-11-06)
+
+- Add an About window, opened from Settings. It plays the Oddly Software logo with
+  sound once, and a click on the logo plays it again. A mute button is remembered.
+- List the author's links and other projects in the About window.
+- Bundle GStreamer in the AppImage so the logo plays there too.
+- Add a new icon: a magpie, traced from a photo, wearing a disc as sunnies, for the
+  desktop, menu, taskbar and notifications, with one-colour versions for the tray.
+
+## 1.0.3 (2026-11-06)
+
+- Show a large, sharp poster when the pointer rests on a TMDb result, big enough to
+  read the actors and title. It downloads when first needed and is cached.
+- List each TMDb result's main actors as bullet points beside its summary.
+- Keep the search and the File button in view: only the results and titles scroll.
+- Add a button to hide and show the log. The choice is remembered.
+
 ## 1.0.2 (2026-11-06)
 
 - Show a TMDb result's poster at twice the size after the pointer rests on it for

@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "1.0.2"
+VERSION = "1.0.4"
 
 log = logging.getLogger("littlerippa-autosort")
 
@@ -780,10 +780,15 @@ def _finish_folder(folder, destination):
 
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_TIMEOUT_SECONDS = 15
-# w92 is TMDb's smallest poster size, and still sharp at twice the displayed size.
-TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w92"
-# A w92 poster is a few kilobytes, so anything near this is not a poster.
+TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/"
+# TMDb's smallest poster, for thumbnails in a result list.
+POSTER_SIZE_THUMBNAIL = "w92"
+# Large enough to read the names and faces on a poster.
+POSTER_SIZE_PREVIEW = "w500"
+# A w500 poster is a few hundred kilobytes at most, so anything near this is not a poster.
 MAX_POSTER_BYTES = 1_000_000
+# How many actors a search result names, in TMDb's billing order.
+MAIN_CAST_SIZE = 4
 # poster_path comes from the network and becomes a cache file name, so it must
 # not be able to contain a directory.
 POSTER_PATH_PATTERN = re.compile(r"/[A-Za-z0-9_-]+\.[A-Za-z0-9]+")
@@ -862,6 +867,15 @@ class Tmdb:
         data = self._get(f"/movie/{tmdb_id}") or {}
         return data["runtime"] * 60 if data.get("runtime") else None
 
+    def main_cast(self, tmdb_id, series=False):
+        """The lead actors' names, top billing first; empty when TMDb lists none.
+        A series uses its aggregate credits because its plain credits cover only
+        the latest season."""
+        path = f"/tv/{tmdb_id}/aggregate_credits" if series else f"/movie/{tmdb_id}/credits"
+        data = self._get(path) or {}
+        names = [person["name"] for person in data.get("cast", []) if person.get("name")]
+        return names[:MAIN_CAST_SIZE]
+
     def season_episodes(self, show_id, season):
         """Episode number -> EpisodeInfo; empty when TMDb has no such season."""
         data = self._get(f"/tv/{show_id}/season/{season}") or {}
@@ -872,7 +886,7 @@ class Tmdb:
         return episodes
 
 
-def fetch_poster(poster_path, cache_dir):
+def fetch_poster(poster_path, cache_dir, size=POSTER_SIZE_THUMBNAIL):
     """A poster's image bytes, from the cache or else from TMDb's image server.
 
     The image server needs no credentials, so the API key is not sent. Blocks,
@@ -880,14 +894,15 @@ def fetch_poster(poster_path, cache_dir):
     """
     if not POSTER_PATH_PATTERN.fullmatch(poster_path):
         raise TmdbError(f"TMDb returned an unusable poster path: {poster_path!r}")
-    cached = Path(cache_dir) / poster_path[1:]
+    # Flat, not one folder per size, because clear_poster_cache leaves subfolders alone.
+    cached = Path(cache_dir) / f"{size}-{poster_path[1:]}"
     try:
         return cached.read_bytes()
     except OSError:
         pass
 
     try:
-        with urllib.request.urlopen(TMDB_POSTER_BASE + poster_path,
+        with urllib.request.urlopen(f"{TMDB_POSTER_BASE}{size}{poster_path}",
                                     timeout=TMDB_TIMEOUT_SECONDS) as response:
             data = response.read(MAX_POSTER_BYTES + 1)
     except (urllib.error.URLError, TimeoutError, OSError) as e:

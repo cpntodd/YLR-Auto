@@ -28,6 +28,12 @@ set_bundled GSETTINGS_SCHEMA_DIR "$USR/share/glib-2.0/schemas"
 set_bundled GIO_MODULE_DIR "$USR/lib/gio/modules"
 set_bundled GTK_EXE_PREFIX "$USR"
 set_bundled GTK_DATA_PREFIX "$USR"
+# GStreamer's plugin scanner is a host-linked program, so scan in this process, where
+# the loader's library path applies. No host plugin is ever loaded.
+set_bundled GST_PLUGIN_SYSTEM_PATH_1_0 "$USR/lib/gstreamer-1.0"
+set_bundled GST_PLUGIN_PATH_1_0 ""
+set_bundled GST_PLUGIN_PATH ""
+set_bundled GST_REGISTRY_FORK no
 set_bundled PYTHONNOUSERSITE 1
 set_bundled PYTHONDONTWRITEBYTECODE 1
 if [ -z "$YLR_AUTO_ENV_READY" ]; then
@@ -39,6 +45,8 @@ if [ -z "$YLR_AUTO_ENV_READY" ]; then
     sed "s|@LOADER_DIR@|$USR/lib/gdk-pixbuf-2.0/loaders|g" \
         "$USR/lib/gdk-pixbuf-2.0/loaders.cache.in" > "$cache"
     set_bundled GDK_PIXBUF_MODULE_FILE "$cache"
+    # Kept apart from the host's registry, which lists the host's plugins.
+    set_bundled GST_REGISTRY_1_0 "$cache_dir/ylr-auto-gstreamer-registry.bin"
 
     # The bundled OpenSSL looks for certificates in a Debian path, which other
     # distributions lack. A bundled copy is the fallback on an unusual host.

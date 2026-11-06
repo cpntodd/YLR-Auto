@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 APP_ID = "io.github.cpntodd.YLRAuto"
 MODULES = ("littlerippa_autosort.py", "littlerippa_autosort_gui.py",
            "littlerippa_monitor.py", "littlerippa_tray.py")
+LOGO_VIDEO = "oddly_cartouche.webm"
 MAINTAINER = "cpntodd <cpntodd@users.noreply.github.com>"
 
 LAUNCHER = """#!/bin/sh
@@ -49,7 +50,7 @@ Architecture: all
 Maintainer: {MAINTAINER}
 Installed-Size: {installed_kib}
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1, libadwaita-1-0 (>= 1.5), udev, eject
-Recommends: gir1.2-xapp-1.0, gir1.2-gtk-3.0, x11-utils
+Recommends: gir1.2-xapp-1.0, gir1.2-gtk-3.0, x11-utils, libgtk-4-media-gstreamer, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
 Section: video
 Priority: optional
 Homepage: https://github.com/cpntodd/YLR-Auto
@@ -96,10 +97,13 @@ def write_md5sums(tree):
 def build_tree(tree):
     for module in MODULES:
         install(ROOT / module, tree / "usr/lib/ylr-auto" / module)
+    install(ROOT / LOGO_VIDEO, tree / "usr/lib/ylr-auto" / LOGO_VIDEO)
     write(tree / "usr/bin/ylr-auto", LAUNCHER, 0o755)
     packaging = ROOT / "packaging"
     install(packaging / f"{APP_ID}.desktop", tree / f"usr/share/applications/{APP_ID}.desktop")
-    install(packaging / f"{APP_ID}.svg", tree / f"usr/share/icons/hicolor/scalable/apps/{APP_ID}.svg")
+    icons = packaging / "icons/hicolor"
+    for icon in icons.rglob("*.svg"):
+        install(icon, tree / "usr/share/icons/hicolor" / icon.relative_to(icons))
     install(packaging / f"{APP_ID}.metainfo.xml", tree / f"usr/share/metainfo/{APP_ID}.metainfo.xml")
 
     license_lines = (ROOT / "LICENSE").read_text().splitlines()

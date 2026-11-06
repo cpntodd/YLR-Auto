@@ -19,7 +19,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("XApp", "1.0")
 from gi.repository import Gio, GLib, Gtk, XApp  # noqa: E402
 
-DEFAULT_ICON = "media-optical-symbolic"
+DEFAULT_ICON = "io.github.cpntodd.YLRAuto-symbolic"
 # The panel can start after this helper when both launch at login.
 PANEL_WAIT_SECONDS = 30
 PANEL_CHECK_SECONDS = 2

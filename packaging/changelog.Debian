@@ -1,3 +1,22 @@
+ylr-auto (1.0.4) unstable; urgency=medium
+
+  * Add an About window, opened from Settings, that plays the logo.
+  * Bundle GStreamer in the AppImage so the logo plays there too.
+  * Add a new application and tray icon.
+    See CHANGELOG.md in the source repository.
+
+ -- cpntodd <cpntodd@users.noreply.github.com>  Fri, 06 Nov 2026 15:00:00 +0000
+
+ylr-auto (1.0.3) unstable; urgency=medium
+
+  * Show a large, sharp poster when the pointer rests on a TMDb result.
+  * List each TMDb result's main actors.
+  * Keep the search and the File button in view while results scroll.
+  * Add a button to hide and show the log.
+    See CHANGELOG.md in the source repository.
+
+ -- cpntodd <cpntodd@users.noreply.github.com>  Fri, 06 Nov 2026 14:00:00 +0000
+
 ylr-auto (1.0.2) unstable; urgency=medium
 
   * Show a larger poster when the pointer rests on one.
