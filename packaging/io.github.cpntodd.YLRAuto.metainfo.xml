@@ -9,6 +9,9 @@
     <p>A companion for MakeMKV. It shows what MakeMKV and each optical drive are doing, then files finished rips into Jellyfin libraries using names from TMDb.</p>
     <p>Films that match exactly one TMDb entry by name and runtime can be filed automatically. Anything uncertain waits for you, and unattended filing never deletes a file.</p>
   </description>
+  <provides>
+    <binary>ylr-auto</binary>
+  </provides>
   <launchable type="desktop-id">io.github.cpntodd.YLRAuto.desktop</launchable>
   <url type="homepage">https://github.com/cpntodd/YLR-Auto</url>
   <url type="bugtracker">https://github.com/cpntodd/YLR-Auto/issues</url>
@@ -16,7 +19,26 @@
     <name>cpntodd</name>
   </developer>
   <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Finished rips waiting, with TMDb matches, posters and main actors</caption>
+      <image>https://raw.githubusercontent.com/cpntodd/YLR-Auto/main/docs/screenshot.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A large poster shown over the TMDb results</caption>
+      <image>https://raw.githubusercontent.com/cpntodd/YLR-Auto/main/docs/screenshot-poster.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The About window</caption>
+      <image>https://raw.githubusercontent.com/cpntodd/YLR-Auto/main/docs/screenshot-about.png</image>
+    </screenshot>
+  </screenshots>
   <releases>
+    <release version="1.1.0" date="2026-11-06">
+      <description>
+        <p>Rewritten in Rust as one program with no Python dependency. It opens faster and uses less memory. A new install follows the desktop's light or dark preference. While ripping, the percentage is in the tray icon's tooltip.</p>
+      </description>
+    </release>
     <release version="1.0.4" date="2026-11-06"/>
     <release version="1.0.3" date="2026-11-06"/>
     <release version="1.0.2" date="2026-11-06"/>

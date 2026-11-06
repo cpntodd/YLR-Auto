@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build dist/ylr-auto_<version>_all.deb. Needs only dpkg-deb, so no root.
+"""Build dist/ylr-auto_<version>_<arch>.deb. Needs cargo, dpkg-deb and dpkg-shlibdeps,
+but no root.
 
-The package is architecture-independent Python and depends on the distribution's
-GTK stack, so it needs no compiling. Dependency versions are the first releases
-with the APIs the app uses: GTK 4.12 for CssProvider.load_from_string, libadwaita
-1.5 for PreferencesDialog, and Python 3.10 for "X | None" annotations.
+The library dependencies come from dpkg-shlibdeps, which reads the versions the program's
+symbols need. The Rust bindings are limited to GTK 4.12 and libadwaita 1.5, the first
+releases with CssProvider.load_from_string and PreferencesDialog.
 """
 
 import gzip
@@ -12,18 +12,13 @@ import hashlib
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = "io.github.cpntodd.YLRAuto"
-MODULES = ("littlerippa_autosort.py", "littlerippa_autosort_gui.py",
-           "littlerippa_monitor.py", "littlerippa_tray.py")
 LOGO_VIDEO = "oddly_cartouche.webm"
 MAINTAINER = "cpntodd <cpntodd@users.noreply.github.com>"
-
-LAUNCHER = """#!/bin/sh
-exec python3 /usr/lib/ylr-auto/littlerippa_autosort_gui.py "$@"
-"""
 
 COPYRIGHT = """Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: YLR-Auto
@@ -39,18 +34,30 @@ License: Expat
 
 
 def project_version():
-    source = (ROOT / "littlerippa_autosort.py").read_text()
-    return re.search(r'^VERSION = "(.+)"$', source, re.MULTILINE).group(1)
+    manifest = (ROOT / "Cargo.toml").read_text()
+    return re.search(r'^version = "(.+)"$', manifest, re.MULTILINE).group(1)
 
 
-def control_text(version, installed_kib):
+def library_dependencies(program):
+    """The Depends entries dpkg-shlibdeps finds for the program. It insists on running
+    beside a debian/control, which it does not otherwise use."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "debian").mkdir()
+        (Path(tmp) / "debian/control").write_text("Source: ylr-auto\n\nPackage: ylr-auto\nArchitecture: any\n")
+        result = subprocess.run(["dpkg-shlibdeps", "-O", "-e", str(program)], cwd=tmp,
+                                capture_output=True, text=True, check=True)
+    return re.search(r"shlibs:Depends=(.*)", result.stdout).group(1)
+
+
+def control_text(version, architecture, depends, installed_kib):
     return f"""Package: ylr-auto
 Version: {version}
-Architecture: all
+Architecture: {architecture}
 Maintainer: {MAINTAINER}
 Installed-Size: {installed_kib}
-Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1, libadwaita-1-0 (>= 1.5), udev, eject
-Recommends: gir1.2-xapp-1.0, gir1.2-gtk-3.0, x11-utils, libgtk-4-media-gstreamer, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
+Depends: {depends}, udev, eject
+Recommends: x11-utils, libgtk-4-media-gstreamer, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
+Suggests: xapp-sn-watcher
 Section: video
 Priority: optional
 Homepage: https://github.com/cpntodd/YLR-Auto
@@ -95,10 +102,8 @@ def write_md5sums(tree):
 
 
 def build_tree(tree):
-    for module in MODULES:
-        install(ROOT / module, tree / "usr/lib/ylr-auto" / module)
-    install(ROOT / LOGO_VIDEO, tree / "usr/lib/ylr-auto" / LOGO_VIDEO)
-    write(tree / "usr/bin/ylr-auto", LAUNCHER, 0o755)
+    install(ROOT / "target/release/ylr-auto", tree / "usr/bin/ylr-auto", 0o755)
+    install(ROOT / LOGO_VIDEO, tree / "usr/share/ylr-auto" / LOGO_VIDEO)
     packaging = ROOT / "packaging"
     install(packaging / f"{APP_ID}.desktop", tree / f"usr/share/applications/{APP_ID}.desktop")
     icons = packaging / "icons/hicolor"
@@ -119,6 +124,9 @@ def main():
     changelog_head = (ROOT / "packaging/changelog.Debian").read_text().splitlines()[0]
     if f"({version})" not in changelog_head:
         raise SystemExit(f"Add a {version} entry to packaging/changelog.Debian before building.")
+    subprocess.run(["cargo", "build", "--release", "--locked", "-p", "ylr-auto"], cwd=ROOT, check=True)
+    architecture = subprocess.run(["dpkg", "--print-architecture"], capture_output=True, text=True,
+                                  check=True).stdout.strip()
     tree = ROOT / "build" / "deb"
     shutil.rmtree(tree, ignore_errors=True)
     build_tree(tree)
@@ -126,11 +134,12 @@ def main():
     for directory in [tree, *(path for path in tree.rglob("*") if path.is_dir())]:
         directory.chmod(0o755)
     installed_bytes = sum(path.stat().st_size for path in tree.rglob("*") if path.is_file())
-    write(tree / "DEBIAN/control", control_text(version, max(1, installed_bytes // 1024)))
+    depends = library_dependencies(tree / "usr/bin/ylr-auto")
+    write(tree / "DEBIAN/control", control_text(version, architecture, depends, max(1, installed_bytes // 1024)))
     write_md5sums(tree)
     (tree / "DEBIAN").chmod(0o755)
 
-    output = ROOT / "dist" / f"ylr-auto_{version}_all.deb"
+    output = ROOT / "dist" / f"ylr-auto_{version}_{architecture}.deb"
     output.parent.mkdir(exist_ok=True)
     subprocess.run(["dpkg-deb", "--root-owner-group", "--build", str(tree), str(output)], check=True)
     print(output)

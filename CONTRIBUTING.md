@@ -7,21 +7,25 @@ moved or deleted, open an issue first, because those safeguards are deliberate.
 
 | File | Purpose |
 |---|---|
-| `littlerippa_autosort.py` | Filing rules, runtime reading and the TMDb client. No GUI code. |
-| `littlerippa_monitor.py` | Reads MakeMKV's state from `/proc`, udev and its window title. No GUI code. |
-| `littlerippa_autosort_gui.py` | The GTK 4 window. Disk and network work runs on background threads. |
-| `littlerippa_tray.py` | Tray helper, a separate process because XApp links GTK 3. |
+| `crates/ylr-core` | Filing rules, runtime reading, the TMDb client, and reading MakeMKV's state from `/proc`, udev and its window title. No GUI code. |
+| `crates/ylr-auto` | The GTK 4 window and the tray icon. Disk and network work runs on background threads. |
 | `packaging/` | Desktop entry, icon, metadata and package build scripts. |
 
 ## Run the tests
 
-    python3 -m unittest test_littlerippa_autosort
+    cargo test --workspace
 
-The tests need Linux and Python 3.10 or newer, but not GTK or network access.
+The tests need Linux and the GTK 4 and libadwaita development files, but no display or
+network access. To drive the real window through filing, run this, which needs
+`gtk4-broadwayd` and `dbus-run-session`. It uses its own display, session bus and home
+folder, and can save screenshots to a folder you name:
+
+    crates/ylr-auto/tests/run_gui_smoke.sh [folder]
 
 ## Build the .deb
 
-Needs `dpkg-deb`. The output is `dist/ylr-auto_<version>_all.deb`.
+Needs `cargo`, `dpkg-deb` and `dpkg-shlibdeps` from `dpkg-dev`. The output is
+`dist/ylr-auto_<version>_<architecture>.deb`.
 
     python3 packaging/build_deb.py
 
@@ -37,6 +41,6 @@ Without a path, you can test the unpacked bundle with `build/AppDir/AppRun`.
 
 ## Make a release
 
-Update `VERSION` in `littlerippa_autosort.py`, the version in `packaging/ylr-auto.1`,
+Update `version` in `Cargo.toml`, the version in `packaging/ylr-auto.1`,
 the release list in `packaging/io.github.cpntodd.YLRAuto.metainfo.xml`,
 `packaging/changelog.Debian` and `CHANGELOG.md`.

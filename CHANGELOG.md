@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 (2026-11-06)
+
+- Rewrite the app in Rust. It is now one program, with no Python, PyGObject or GTK 3,
+  and settings, logs, caches and library layouts carry over unchanged.
+- Open the window about twice as fast and use less than half the memory. See
+  [Test results](README.md#test-results).
+- Show the tray icon through StatusNotifierItem, inside the app, instead of a separate
+  XApp helper. The ripping percentage moves from the panel to the icon's tooltip.
+  Cinnamon needs `xapp-sn-watcher`, which it normally runs already.
+- Follow the desktop's light or dark preference on a new install. An existing setting
+  is kept, and **Settings, Appearance** still offers the dark grey theme.
+- Read a corrupt MKV as having an unknown runtime instead of failing with a memory error.
+- The `.deb` is now built for amd64 instead of being architecture-independent.
+
 ## 1.0.4 (2026-11-06)
 
 - Add an About window, opened from Settings. It plays the Oddly Software logo with

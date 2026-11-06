@@ -3,10 +3,10 @@
 
     python3 packaging/build_appimage.py [path/to/appimagetool]
 
-Run on Debian 13 with the app's runtime dependencies installed, because the
-bundle is copied from this system. Libraries are found by following ldd from a
-list of starting points. That is smaller than unpacking the 375 packages apt
-reports, which include init systems and fonts the app never loads.
+Run on Debian 13 with GTK 4, libadwaita and GStreamer installed, because the bundle is
+copied from this system. Libraries are found by following ldd from a list of starting
+points. That is smaller than unpacking the packages apt reports, which include init
+systems and fonts the app never loads.
 
 The tool is never downloaded here, so a build only runs what you chose to install.
 Without one, build/AppDir is left ready to test or pack.
@@ -21,11 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = "io.github.cpntodd.YLRAuto"
-MODULES = ("littlerippa_autosort.py", "littlerippa_autosort_gui.py",
-           "littlerippa_monitor.py", "littlerippa_tray.py")
 LOGO_VIDEO = "oddly_cartouche.webm"
 MULTIARCH = Path("/usr/lib/x86_64-linux-gnu")
-PYTHON = "python3.13"
 ICON_PIXELS = 256
 # Only what the About window's logo needs: WebM, VP9, Opus, and sound through
 # PulseAudio, which PipeWire also serves.
@@ -33,26 +30,16 @@ GSTREAMER_PLUGINS = ("audioconvert", "audiofx", "audioresample", "autodetect", "
                      "matroska", "opus", "playback", "pulseaudio", "typefindfunctions",
                      "videoconvertscale", "volume", "vpx")
 
-# Loaded by dlopen, so following ldd alone would miss them: typelibs name their
-# library at runtime, and glibc loads libgcc_s to cancel threads.
-SEED_LIBRARIES = ("libgtk-4.so.1", "libadwaita-1.so.0", "libgtk-3.so.0", "libgdk-3.so.0",
-                  "libxapp.so.1", "libgirepository-1.0.so.1", "libgirepository-2.0.so.0",
-                  "libgraphene-1.0.so.0", "libgdk_pixbuf-2.0.so.0", "libpango-1.0.so.0",
-                  "libpangocairo-1.0.so.0", "libharfbuzz.so.0", "libatk-1.0.so.0",
-                  "libgcc_s.so.1", "libnss_dns.so.2", "libnss_files.so.2", "libresolv.so.2",
+# Loaded by dlopen, so following ldd from the program alone would miss them: glibc loads
+# libgcc_s to cancel threads and the name service modules to look up hosts, and the
+# SVG icons need librsvg through its pixbuf loader.
+SEED_LIBRARIES = ("libgcc_s.so.1", "libnss_dns.so.2", "libnss_files.so.2", "libresolv.so.2",
                   "librsvg-2.so.2")
-TYPELIB_PREFIXES = ("Adw-1", "Atk-1", "cairo-1", "DBus", "DBusGLib", "Gdk-3", "Gdk-4", "GdkPixbuf-",
-                    "GdkPixdata-", "GdkWayland-4", "GdkX11-3", "GdkX11-4", "Gio", "GIRepository-",
-                    "GL-1", "GLib-", "GModule-", "GObject-", "Graphene-1", "Gsk-4", "Gtk-3", "Gtk-4",
-                    "HarfBuzz-", "Pango-", "PangoCairo-", "PangoFc-", "PangoFT2-", "PangoOT-",
-                    "PangoXft-", "Rsvg-", "XApp-", "fontconfig-", "freetype2-", "win32-",
-                    "xfixes-", "xft-", "xlib-", "xrandr-")
-SKIPPED_STDLIB = ("test", "idlelib", "tkinter", "turtledemo", "ensurepip", "lib2to3", "pydoc_data")
 
 
 def project_version():
-    source = (ROOT / "littlerippa_autosort.py").read_text()
-    return re.search(r'^VERSION = "(.+)"$', source, re.MULTILINE).group(1)
+    manifest = (ROOT / "Cargo.toml").read_text()
+    return re.search(r'^version = "(.+)"$', manifest, re.MULTILINE).group(1)
 
 
 def linked_libraries(path):
@@ -85,28 +72,13 @@ def copy_tree(source, destination, skip=()):
                     symlinks=False, dirs_exist_ok=True)
 
 
-def install_python(usr):
-    shutil.copy2(f"/usr/bin/{PYTHON}", usr / "bin" / PYTHON)
-    copy_tree(f"/usr/lib/{PYTHON}", usr / "lib" / PYTHON, skip=SKIPPED_STDLIB)
-    packages = usr / "lib/python3/dist-packages"
-    packages.mkdir(parents=True)
-    copy_tree("/usr/lib/python3/dist-packages/gi", packages / "gi")
-    copy_tree("/usr/lib/python3/dist-packages/cairo", packages / "cairo")
-    shutil.copy2(ROOT / "packaging/ylr-python", usr / "bin/ylr-python")
-    # getpath finds the prefix from this name, passed to the loader as argv0.
-    (usr / "bin/python3").symlink_to(PYTHON)
-
-
-def install_introspection(usr):
-    typelibs = usr / "lib/girepository-1.0"
-    typelibs.mkdir(parents=True)
-    for typelib in (MULTIARCH / "girepository-1.0").glob("*.typelib"):
-        if typelib.name.startswith(TYPELIB_PREFIXES):
-            shutil.copy2(typelib, typelibs)
+def install_program(usr):
+    subprocess.run(["cargo", "build", "--release", "--locked", "-p", "ylr-auto"], cwd=ROOT, check=True)
+    shutil.copy2(ROOT / "target/release/ylr-auto", usr / "bin/ylr-auto")
 
 
 def install_pixbuf_loaders(usr):
-    """Keep the loaders and a cache template; ylr-python fills in the mount point."""
+    """Keep the loaders and a cache template; AppRun fills in the mount point."""
     pixbuf_root = MULTIARCH / "gdk-pixbuf-2.0"
     host_loader_dir = next(pixbuf_root.glob("2.*/loaders"))
     loaders = usr / "lib/gdk-pixbuf-2.0/loaders"
@@ -127,7 +99,6 @@ def install_data(usr):
     for schema in Path("/usr/share/glib-2.0/schemas").glob("org.gtk.*.gschema.xml"):
         shutil.copy2(schema, schemas)
     subprocess.run(["glib-compile-schemas", str(schemas)], check=True)
-    shutil.copy2("/etc/ssl/certs/ca-certificates.crt", share / "ca-certificates-bundle.crt")
     (usr / "lib/gio/modules").mkdir(parents=True)
 
 
@@ -154,11 +125,9 @@ def render_icon(svg, png):
 
 def install_app(appdir):
     usr = appdir / "usr"
-    app = usr / "lib/ylr-auto"
-    app.mkdir(parents=True)
-    for module in MODULES:
-        shutil.copy2(ROOT / module, app)
-    shutil.copy2(ROOT / LOGO_VIDEO, app)
+    data = usr / "share/ylr-auto"
+    data.mkdir(parents=True)
+    shutil.copy2(ROOT / LOGO_VIDEO, data)
     packaging = ROOT / "packaging"
     shutil.copy2(packaging / "AppRun", appdir / "AppRun")
     shutil.copy2(packaging / f"{APP_ID}.desktop", appdir)
@@ -186,7 +155,7 @@ def bundle_libraries(usr):
         shutil.copy2(seed.resolve(), bundled / seed.name)
     bundled_elves = [path for path in usr.rglob("*")
                      if path.is_file() and not path.is_symlink() and path.parent != bundled
-                     and (path.suffix == ".so" or ".so." in path.name or path.name == PYTHON)
+                     and (path.suffix == ".so" or ".so." in path.name or path.name == "ylr-auto")
                      and is_elf(path)]
     collect_libraries([*seeds, *bundled_elves], bundled)
 
@@ -202,14 +171,12 @@ def main():
     (usr / "bin").mkdir(parents=True)
     (usr / "lib").mkdir()
 
-    install_python(usr)
-    install_introspection(usr)
+    install_program(usr)
     install_pixbuf_loaders(usr)
     install_data(usr)
     install_media(usr)
     install_app(appdir)
     bundle_libraries(usr)
-    make_executable(usr / "bin/ylr-python")
     make_executable(appdir / "AppRun")
 
     if len(sys.argv) < 2:
@@ -217,7 +184,7 @@ def main():
         return
     output = ROOT / "dist" / f"YLR-Auto-{project_version()}-x86_64.AppImage"
     output.parent.mkdir(exist_ok=True)
-    subprocess.run([sys.argv[1], "--no-appstream", str(appdir), str(output)], check=True,
+    subprocess.run([sys.argv[1], str(appdir), str(output)], check=True,
                    env={"ARCH": "x86_64", "PATH": "/usr/bin:/bin", "APPIMAGE_EXTRACT_AND_RUN": "1"})
     print(output)
 

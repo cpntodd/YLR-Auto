@@ -1,5 +1,11 @@
 # YLR-Auto
 
+[![Latest release](https://img.shields.io/github/v/release/cpntodd/YLR-Auto)](https://github.com/cpntodd/YLR-Auto/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/cpntodd/YLR-Auto/total)](https://github.com/cpntodd/YLR-Auto/releases)
+[![Licence](https://img.shields.io/github/license/cpntodd/YLR-Auto)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)](https://www.rust-lang.org/)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue)](#install)
+
 A desktop companion for [MakeMKV](https://www.makemkv.com/) on Linux. It shows
 what MakeMKV and your optical drives are doing, then files finished rips into
 [Jellyfin](https://jellyfin.org/) libraries, with names and posters from
@@ -17,22 +23,22 @@ Download a package from the [releases page](https://github.com/cpntodd/YLR-Auto/
 
 **Debian 13, Ubuntu 24.04 or newer (.deb)**
 
-    sudo apt install ./ylr-auto_1.0.4_all.deb
+    sudo apt install ./ylr-auto_1.1.0_amd64.deb
 
 Ubuntu 24.04 meets the package's version requirements, but has not been tested.
 
 **Other x86-64 distributions (AppImage)**
 
-    chmod +x YLR-Auto-1.0.4-x86_64.AppImage
-    ./YLR-Auto-1.0.4-x86_64.AppImage
+    chmod +x YLR-Auto-1.1.0-x86_64.AppImage
+    ./YLR-Auto-1.1.0-x86_64.AppImage
 
-The AppImage bundles Python, GTK and libadwaita, so it needs nothing else
+The AppImage bundles GTK, libadwaita and its own C library, so it needs nothing else
 installed. It has been tested only on Debian 13, and uses software rendering.
 
 **From source**
 
-    sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-xapp-1.0 gir1.2-gtk-3.0
-    python3 littlerippa_autosort_gui.py
+    sudo apt install cargo libadwaita-1-dev
+    cargo run --release -p ylr-auto
 
 Install MakeMKV from its
 [Linux install guide](https://forum.makemkv.com/forum/viewtopic.php?t=224).
@@ -63,7 +69,9 @@ minimised, so the percentage and time left appear only then, and only on X11.
 
 The first start adds YLR-Auto to login startup, which you can turn off in Settings.
 Closing the window keeps it monitoring from the tray; use the tray menu to quit.
-Without a tray (or `gir1.2-xapp-1.0`), closing the window quits.
+While ripping, the tray icon's tooltip shows each rip's percentage when MakeMKV gives one.
+Without a tray, closing the window quits. Cinnamon shows the icon through
+`xapp-sn-watcher`, and GNOME needs an AppIndicator extension.
 
 ## Automatic filing
 
@@ -176,6 +184,56 @@ The library copy is never touched.
 Click the logo to play it again, or use the button at the top left to mute it.
 
 ![The About window, with the Oddly Software logo above details of the author and other projects](docs/screenshot-about.png)
+
+## Test results
+
+Results for 1.1.0, the first Rust version, on Debian 13 with an AMD Ryzen 5 2600.
+
+### Rust against the last Python version
+
+| Measure | Python 1.0.4 | Rust 1.1.0 | Change |
+|---|---|---|---|
+| Start to main window mapped (median) | 254 ms | 127 ms | 50% less |
+| Middle half of those runs | 244 to 264 ms | 124 to 130 ms | |
+| `--version`, from the source or binary | 200 ms | 29 ms | 85% less |
+| `--version`, from the packed AppImage | 900 ms | 159 ms | 82% less |
+| Memory when idle, including Python's tray helper | 113 MB | 48 MB | 58% less |
+| AppImage size | 60.4 MB | 48.4 MB | 20% less |
+
+Window and source `--version` times are 40 alternating runs of each version, and AppImage
+times are 20 runs each. Files were already in the page cache, so a first start after a
+reboot takes longer. The window ran on a headless GTK display with software rendering, its
+own session bus and the same dark theme in both, while three real MakeMKV rips loaded the
+machine. Times on a desktop
+will differ, but both versions were measured the same way.
+
+### Behaviour
+
+| Check | Result |
+|---|---|
+| Rust unit and integration tests | 105 of 105 pass |
+| Tests carried over from the Python version | all 82 have a Rust counterpart |
+| Same random inputs through both versions, with results and file trees compared | 574,173 cases, 0 differences |
+| Deliberate bugs planted to test that comparison | 6 of 6 caught |
+| GUI run: filing a film and a series by hand, and a film automatically | passes |
+| Read-only comparison against live rips, drives and MakeMKV settings | identical |
+| Packed AppImage with no network and the C locale | starts and stays running |
+| Packed AppImage on X11 | shows its main window |
+
+The comparison also found one intended difference. A corrupt MKV header could make Python
+run out of memory, which happened with about 2% of the corrupted files tried, and Rust
+reads it as an unknown runtime. Python's crash cases were left out of the count above.
+
+The Python version and its comparison tools were removed in 1.1.0, so these two tables can
+only be reproduced from the commit before that removal.
+
+### Not tested
+
+- The AppImage on the oldest supported Ubuntu LTS, which the AppImage catalog's own test
+  checks. It carries its own C library for this reason.
+- The `.deb` on Ubuntu 24.04, whose versions meet its dependencies.
+- The tray icon on desktops other than Cinnamon, and a real TMDb search with a valid key.
+  The HTTPS client was tested against TMDb with an invalid key.
 
 ## Build and test
 
