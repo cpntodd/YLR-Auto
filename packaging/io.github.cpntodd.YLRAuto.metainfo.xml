@@ -40,7 +40,7 @@
   <releases>
     <release version="2.0.0" date="2026-11-06">
       <description>
-        <p>Rips from each optical drive without opening MakeMKV's window. Open a disc, pick what it is on TMDb, tick its titles and rip. Drives can run at once, with progress throughout, and eject when they finish. The AppImage can now update itself with AppImageUpdate.</p>
+        <p>Rips from each optical drive without opening MakeMKV's window. Open a disc, pick what it is on TMDb, tick its titles and rip. Drives can run at once, with progress throughout, and eject when they finish. Settings and presets decide what each drive does, up to ripping a disc as soon as it is inserted. The AppImage can now update itself with AppImageUpdate.</p>
       </description>
     </release>
     <release version="1.1.1" date="2026-11-06">

@@ -12,6 +12,15 @@
   filing. A picked film files itself when its runtime agrees and automatic filing is on.
 - Stop a rip with a confirmation, removing the unfinished title. Quitting warns first.
 - Disable ripping on a drive a MakeMKV window holds, and say why.
+- Add **Settings, Ripping**, with presets and an override for each drive: what the drive
+  button does, what inserting a disc does, the title list, the row's progress and look,
+  Stop, where rips go, and what a failure does. A new install is unchanged until you
+  choose otherwise, and nothing starts by itself.
+- Name a drive, see its recent rips, and start or stop it from the tray menu.
+- Choose which alerts to get, with an optional sound.
+- Keep trying to eject for ten minutes while a MakeMKV dialog holds a finished disc.
+- Tell which drive a MakeMKV window read from when it holds only that drive's SCSI device,
+  so ejecting after a rip no longer needs a guess in single-drive mode.
 - Embed update information in the AppImage and publish a `.zsync` file beside it, so
   AppImageUpdate can update it.
 

@@ -16,4 +16,6 @@ rather than a public issue. Only the latest release is supported.
   licence key. It runs `makemkvcon`, which reads that file itself.
 - It creates a folder in the rip folder for each rip, and deletes the unfinished title
   when you stop one.
+- It keeps each drive's recent disc names and results in
+  `~/.local/state/littlerippa-autosort/rip-history.json`.
 - It writes desktop entries to your application menu and login startup folders.

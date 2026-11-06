@@ -60,7 +60,8 @@ so nothing is written while a network share is unmounted.
 
 ## Ripping a disc
 
-Each drive in the left column shows its disc, with **Open** and Eject buttons.
+Each drive in the left column shows its disc, with **Open** and Eject buttons. This is
+how a new install behaves; [Ripping settings](#ripping-settings) offers other ways.
 
 1. **Open** scans the disc and shows its page on the right. Clicking a drive also shows
    its page, and the right pane only ever changes when you click.
@@ -85,6 +86,46 @@ finishes** in Settings ejects it, which a dialog in MakeMKV's window would preve
 wait for you. If a rip fails, the row gives the reason and **Retry**, and the disc stays
 in the drive. Quitting while a drive is busy asks first, then stops it.
 
+## Ripping settings
+
+**Settings, Ripping** holds the defaults for every drive, and **Drive settings** on a
+drive's page overrides any of them for that drive.
+
+| Setting | Choices |
+|---|---|
+| Drive button | Open the disc and choose; rip the main title if obvious, otherwise choose; rip every title over the minimum length; choose from a menu on each press, which remembers the last choice |
+| When a disc is inserted | Do nothing; scan it, then wait; rip it |
+| Title list | Expand each title to see its tracks; compact; detailed, with every title's tracks shown |
+| Progress in the drive's row | Bar, percentage and time left; also title and speed; bars for the title and the disc; bar and percentage |
+| Drive status | Text and accent colours; coloured label; icon; tinted row |
+| Stop button | Confirm and remove the unfinished title; confirm and keep it; stop at once and remove it; ask each time |
+| Where rips go | The rip folder or the drive's own folder, each named from the disc or with a name you can edit |
+| When a rip fails | Stop and keep the disc in; try once more, then stop; eject and carry on |
+
+**Presets** set the drive button, inserted discs, Stop and failures together:
+
+| Preset | Behaviour |
+|---|---|
+| Cautious, the default | Nothing starts until you open a disc and press **Rip** |
+| Hands-off | Inserting a disc rips its main title if one stands out, and a failed disc is ejected, for feeding discs through |
+| Always ask | Discs are scanned when inserted, and every choice is yours |
+
+Discs already in a drive when YLR-Auto starts do not count as inserted. The right pane
+never changes for an inserted disc, so filing is not interrupted.
+
+An unattended rip does not wait for a TMDb pick, and
+filing then follows [Automatic filing](#automatic-filing) as usual. A drive's own folder
+outside the rip folder is not listed under **Rips to file**, so its rips are filed by hand.
+
+**Settings, Ripping** also sets the shortest title to consider, and which alerts to give:
+a rip finishing, a scan or rip failing, and a disc needing you, each with an optional
+sound. Sound uses the freedesktop theme's files through `pw-play`, `paplay` or `ogg123`,
+and falls back to the system beep.
+
+**Drive settings** can also name a drive, in place of its model. Names and overrides are
+saved under the drive's serial number, so they survive `/dev/srN` changing. **Recent rips**
+lists the last 20 results for that drive, which helps to spot one that is failing.
+
 Audio and subtitle tracks follow the default selection rule in **Preferences, Advanced**
 in MakeMKV's window, because no `makemkvcon` option for choosing tracks in one rip was
 found. Rip from MakeMKV's window if you need to choose them.
@@ -96,6 +137,10 @@ what it does. The left column shows each rip's title, data written, speed and ti
 elapsed. **Open** is disabled on a drive a MakeMKV window holds, until you close that
 disc or window. MakeMKV's single-drive mode runs one instance per drive.
 
+If ejecting after a rip is on, YLR-Auto keeps trying for ten minutes while a dialog in
+MakeMKV's window holds the disc. A disc still open in that window after the dialog has to
+be closed there.
+
 MakeMKV offers no progress interface to other programs, so this is read from `/proc` and
 udev. MakeMKV only shows a percentage in its window title while minimised, so for these
 rips the percentage and time left appear only then, and only on X11.
@@ -105,7 +150,8 @@ rips the percentage and time left appear only then, and only on X11.
 The first start adds YLR-Auto to login startup, which you can turn off in Settings.
 Closing the window keeps it running from the tray, rips included; use the tray menu to
 quit. While ripping, the tray icon's tooltip shows each rip's percentage when one is
-known. Without a tray, closing the window quits. Cinnamon shows the icon through
+known. The tray menu also lists each drive's next action, such as Open, Rip or Stop, and
+anything needing a choice brings the window up. Without a tray, closing the window quits. Cinnamon shows the icon through
 `xapp-sn-watcher`, and GNOME needs an AppIndicator extension.
 
 ## Automatic filing
@@ -242,11 +288,14 @@ DVDs.
 | Runtime of each rip against the scan | within 7 seconds |
 | Stopping a rip | `makemkvcon` exited in 3 seconds, leaving a file with no runtime |
 | Open, choose titles, rip and stop in the window, by hand | passes |
-| Unit and integration tests | 149 of 149 pass |
+| Unit and integration tests | 172 of 172 pass |
+
+The settings, row styles, retry and history were run through the window only with a
+stand-in for `makemkvcon`, which played back recorded output and a simulated read error.
 
 Not tested: a real read error or an expired MakeMKV key, whose messages come from MakeMKV
-itself, a Blu-ray disc or a series disc through **Open**, and `makemkvcon` on another
-desktop or distribution.
+itself, a Blu-ray disc or a series disc through **Open**, the alert sounds and tray menu on
+real desktops, and `makemkvcon` on another desktop or distribution.
 
 ### Rust against the last Python version
 

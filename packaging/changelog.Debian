@@ -1,6 +1,7 @@
 ylr-auto (2.0.0) unstable; urgency=medium
 
   * Rip from each drive through makemkvcon, choosing titles and a TMDb match.
+  * Add settings, presets and per-drive overrides for how each drive rips.
     See CHANGELOG.md in the source repository.
 
  -- cpntodd <cpntodd@users.noreply.github.com>  Fri, 06 Nov 2026 21:00:00 +0000
