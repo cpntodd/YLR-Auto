@@ -757,6 +757,7 @@ fn film(tmdb_id: u64, title: &str, year: i32) -> Match {
         year: Some(year),
         overview: String::new(),
         poster_path: None,
+        original_title: None,
     }
 }
 

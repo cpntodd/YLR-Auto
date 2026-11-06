@@ -109,6 +109,7 @@ mod tmdb {
             year: Some(1990),
             overview: "x".to_string(),
             poster_path: None,
+            original_title: None,
         };
         assert_eq!(matches, [expected]);
     }

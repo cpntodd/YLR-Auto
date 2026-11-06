@@ -20,7 +20,7 @@ use ylr_core::monitor::Drive;
 use ylr_core::ripper::{
     self, DiscInfo, DiscTitle, DiscTrack, RipSelection, TitleChoice, TrackKind,
 };
-use ylr_core::tmdb::{FilmCatalogue, Match, Tmdb};
+use ylr_core::tmdb::{FilmCatalogue, Match, MatchSource, SearchOutcome, Tmdb};
 
 /// The search list stays short enough to leave the title list in reach.
 const MAX_MATCHES_SHOWN: usize = 6;
@@ -570,12 +570,8 @@ impl DrivePage {
         let page = self.clone();
         run_in_background(
             move || {
-                let found = if series {
-                    tmdb.search_shows(&query, year)
-                } else {
-                    tmdb.search_movies(&query, year)
-                };
-                found.map_err(|e| e.to_string())
+                tmdb.search_with_similar(&query, year, series)
+                    .map_err(|e| e.to_string())
             },
             move |result| {
                 if generation != page.search_generation.get() {
@@ -583,23 +579,33 @@ impl DrivePage {
                 }
                 match result {
                     Err(e) => page.results_note.set_text(&e),
-                    Ok(mut found) => {
-                        found.truncate(MAX_MATCHES_SHOWN);
-                        page.show_matches(found);
+                    Ok(SearchOutcome {
+                        mut matches,
+                        source,
+                    }) => {
+                        matches.truncate(MAX_MATCHES_SHOWN);
+                        page.show_matches(matches, source);
                     }
                 }
             },
         );
     }
 
-    fn show_matches(self: &Rc<Self>, found: Vec<Match>) {
+    fn show_matches(self: &Rc<Self>, found: Vec<Match>, source: MatchSource) {
         if found.is_empty() {
             self.results_note
                 .set_text("No TMDb results. Edit the name or year and search again.");
             return;
         }
-        self.results_note
-            .set_text("Pick what this disc is, and the title with the same runtime is ticked.");
+        self.results_note.set_text(match source {
+            MatchSource::Similar => {
+                "No exact TMDb match. Similar titles are listed; pick one, or edit the name and search again."
+            }
+            MatchSource::Linked => "Using the title from this TMDb link or ID.",
+            MatchSource::Named => {
+                "Pick what this disc is, and the title with the same runtime is ticked."
+            }
+        });
         *self.matches.borrow_mut() = found.clone();
 
         let cache = self
@@ -610,11 +616,8 @@ impl DrivePage {
         let series = self.is_series();
         self.applying.set(true);
         for item in &found {
-            let year = item
-                .year
-                .map_or("year unknown".to_string(), |year| year.to_string());
             let row = adw::ActionRow::builder()
-                .title(format!("{} ({year})", item.title))
+                .title(item.row_title())
                 .subtitle(&item.overview)
                 .subtitle_lines(2)
                 .use_markup(false)
@@ -625,10 +628,18 @@ impl DrivePage {
             self.results.append(&row);
         }
         self.results.set_visible(true);
-        self.results
-            .select_row(self.results.row_at_index(0).as_ref());
+        // A similar title may be the wrong film, so it is never chosen on the user's behalf.
+        let similar = source == MatchSource::Similar;
+        if !similar {
+            self.results
+                .select_row(self.results.row_at_index(0).as_ref());
+        }
         self.applying.set(false);
-        self.use_match(found.first().cloned());
+        // A pasted link is the user's own choice, so it carries to filing like a click.
+        self.pick_is_a_persons.set(source == MatchSource::Linked);
+        if !similar {
+            self.use_match(found.first().cloned());
+        }
     }
 
     fn on_match_selected(self: &Rc<Self>, index: Option<i32>) {

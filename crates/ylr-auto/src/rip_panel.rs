@@ -13,7 +13,9 @@ use std::sync::Arc;
 use ylr_core::autosort::{
     self as core, Episode, FilingError, LibraryName, MovieJob, Rip, Title, TvJob,
 };
-use ylr_core::tmdb::{EpisodeInfo, FilmCatalogue, Match, Tmdb};
+use ylr_core::tmdb::{
+    is_tmdb_reference, EpisodeInfo, FilmCatalogue, Match, MatchSource, SearchOutcome, Tmdb,
+};
 
 const MAX_SEARCH_RESULTS: usize = 8;
 /// Wide enough for most names; the column keeps this width while the cast loads so
@@ -701,16 +703,13 @@ impl RipPanel {
         self.search_generation.set(generation);
         let year = self.typed_year();
         let series = self.layout() == Layout::Series;
+        let is_reference = is_tmdb_reference(&query);
 
         let panel = self.clone();
         run_in_background(
             move || {
-                let found = if series {
-                    tmdb.search_shows(&query, year)
-                } else {
-                    tmdb.search_movies(&query, year)
-                };
-                found.map_err(|e| e.to_string())
+                tmdb.search_with_similar(&query, year, series)
+                    .map_err(|e| e.to_string())
             },
             move |result| {
                 if generation != panel.search_generation.get() {
@@ -718,21 +717,26 @@ impl RipPanel {
                 }
                 match result {
                     Err(e) => {
-                        panel
-                            .results_note
-                            .set_text(&format!("{e} The typed name will be used."));
+                        panel.results_note.set_text(&if is_reference {
+                            e
+                        } else {
+                            format!("{e} The typed name will be used.")
+                        });
                         panel.refresh_target();
                     }
-                    Ok(mut found) => {
-                        found.truncate(MAX_SEARCH_RESULTS);
-                        panel.show_matches(found);
+                    Ok(SearchOutcome {
+                        mut matches,
+                        source,
+                    }) => {
+                        matches.truncate(MAX_SEARCH_RESULTS);
+                        panel.show_matches(matches, source);
                     }
                 }
             },
         );
     }
 
-    fn show_matches(self: &Rc<Self>, found: Vec<Match>) {
+    fn show_matches(self: &Rc<Self>, found: Vec<Match>, source: MatchSource) {
         *self.matches.borrow_mut() = found.clone();
         if found.is_empty() {
             self.results_note.set_text(
@@ -741,19 +745,21 @@ impl RipPanel {
             self.refresh_target();
             return;
         }
-        self.results_note
-            .set_text("Pick the TMDb match, or edit the name to use it as typed.");
+        self.results_note.set_text(match source {
+            MatchSource::Similar => {
+                "No exact TMDb match. Similar titles are listed; pick one, or the typed name will be used."
+            }
+            MatchSource::Linked => "Using the film from this TMDb link or ID.",
+            MatchSource::Named => "Pick the TMDb match, or edit the name to use it as typed.",
+        });
 
         let cache = self
             .owner()
             .map(|window| window.paths().poster_cache.clone())
             .unwrap_or_default();
         for item in &found {
-            let year = item
-                .year
-                .map_or("year unknown".to_string(), |year| year.to_string());
             let row = adw::ActionRow::builder()
-                .title(format!("{} ({year})", item.title))
+                .title(item.row_title())
                 .subtitle(&item.overview)
                 .subtitle_lines(2)
                 .use_markup(false)
@@ -771,12 +777,19 @@ impl RipPanel {
             .owner()
             .and_then(|window| window.picked_match(&self.rip.borrow().folder))
             .map(|picked| picked.found.tmdb_id);
-        let row_to_select = found
+        let previously_picked = found
             .iter()
-            .position(|item| Some(item.tmdb_id) == picked_id)
-            .unwrap_or(0);
-        self.results
-            .select_row(self.results.row_at_index(row_to_select as i32).as_ref());
+            .position(|item| Some(item.tmdb_id) == picked_id);
+        // A similar title may be the wrong film, so only a person's own pick selects one.
+        let row_to_select = if source == MatchSource::Similar {
+            previously_picked
+        } else {
+            Some(previously_picked.unwrap_or(0))
+        };
+        if let Some(row_to_select) = row_to_select {
+            self.results
+                .select_row(self.results.row_at_index(row_to_select as i32).as_ref());
+        }
     }
 
     fn on_match_selected(self: &Rc<Self>, index: Option<i32>) {
@@ -967,7 +980,12 @@ impl RipPanel {
             (chosen.first().map(|row| row.title.clone()), numbers)
         };
 
-        let problem = self.blocking_problem(root.as_deref(), &name.title, chosen_title.is_some());
+        // A link that failed to resolve must not become a folder name.
+        let problem = if is_tmdb_reference(&name.title) {
+            Some("Search TMDb to look up this link or ID before filing.")
+        } else {
+            self.blocking_problem(root.as_deref(), &name.title, chosen_title.is_some())
+        };
         let (preview, can_file) = match (problem, root, chosen_title) {
             (None, Some(root), Some(title)) if self.layout() == Layout::Film => {
                 (self.film_preview(&root, &name, &title), true)
