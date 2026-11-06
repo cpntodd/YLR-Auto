@@ -4,7 +4,10 @@
 //! click counts as a person's pick, and only that is carried through to filing, so the
 //! rules for unattended filing are not weakened by the top search result.
 
+use crate::drive_row;
+use crate::drive_settings;
 use crate::rip_panel::cast_label;
+use crate::rip_prefs::{self, DESTINATION, TITLE_LIST};
 use crate::widgets::{labelled, poster_image, run_in_background, size_text};
 use crate::window::MainWindow;
 use adw::prelude::*;
@@ -54,7 +57,10 @@ pub struct DrivePage {
     search_button: gtk::Button,
     results_note: gtk::Label,
     results: gtk::ListBox,
-    title_rows: Vec<(u32, gtk::CheckButton, adw::ExpanderRow)>,
+    title_rows: Vec<(u32, gtk::CheckButton)>,
+    /// Shown when the destination lets the folder name be edited.
+    folder_entry: gtk::Entry,
+    minimum_title_seconds: u32,
     title_note: gtk::Label,
     status_label: gtk::Label,
     progress_bar: gtk::ProgressBar,
@@ -84,19 +90,7 @@ fn track_text(track: &DiscTrack) -> (String, String) {
     (format!("{kind}: {}", track.description), detail)
 }
 
-fn title_row(title: &DiscTitle, is_main: bool) -> (gtk::CheckButton, adw::ExpanderRow) {
-    let mut parts = vec![
-        size_text(title.size_bytes),
-        format!("{} chapters", title.chapters),
-    ];
-    if is_main {
-        parts.push("main title".to_string());
-    }
-    let row = adw::ExpanderRow::builder()
-        .title(format!("Title {}: {}", title.id, title.duration))
-        .subtitle(parts.join(", "))
-        .use_markup(false)
-        .build();
+fn title_tick(title: &DiscTitle) -> gtk::CheckButton {
     let tick = gtk::CheckButton::builder()
         .valign(gtk::Align::Center)
         .build();
@@ -104,22 +98,89 @@ fn title_row(title: &DiscTitle, is_main: bool) -> (gtk::CheckButton, adw::Expand
         "Rip title {}",
         title.id
     ))]);
-    row.add_prefix(&tick);
+    tick
+}
+
+fn title_summary(title: &DiscTitle, is_main: bool) -> String {
+    let mut parts = vec![
+        size_text(title.size_bytes),
+        format!("{} chapters", title.chapters),
+    ];
+    if is_main {
+        parts.push("main title".to_string());
+    }
+    parts.join(", ")
+}
+
+/// Every track on its own line, for the detailed list.
+fn tracks_text(title: &DiscTitle) -> String {
+    let mut lines = Vec::with_capacity(title.tracks.len());
     for track in &title.tracks {
         let (text, detail) = track_text(track);
-        row.add_row(
-            &adw::ActionRow::builder()
-                .title(text)
-                .subtitle(detail)
-                .use_markup(false)
-                .build(),
-        );
+        lines.push(if detail.is_empty() {
+            text
+        } else {
+            format!("{text} ({detail})")
+        });
     }
-    (tick, row)
+    lines.join("\n")
+}
+
+/// One title, in the chosen amount of detail.
+fn title_row(title: &DiscTitle, is_main: bool, style: &str) -> (gtk::CheckButton, gtk::Widget) {
+    let tick = title_tick(title);
+    let heading = format!("Title {}: {}", title.id, title.duration);
+    let summary = title_summary(title, is_main);
+
+    if style == "expandable" {
+        let row = adw::ExpanderRow::builder()
+            .title(heading)
+            .subtitle(summary)
+            .use_markup(false)
+            .build();
+        row.add_prefix(&tick);
+        for track in &title.tracks {
+            let (text, detail) = track_text(track);
+            row.add_row(
+                &adw::ActionRow::builder()
+                    .title(text)
+                    .subtitle(detail)
+                    .use_markup(false)
+                    .build(),
+            );
+        }
+        return (tick, row.upcast());
+    }
+
+    let subtitle = if style == "detailed" {
+        format!("{summary}\n{}", tracks_text(title))
+    } else {
+        summary
+    };
+    let row = adw::ActionRow::builder()
+        .title(heading)
+        .subtitle(subtitle)
+        .use_markup(false)
+        .activatable_widget(&tick)
+        .build();
+    row.add_prefix(&tick);
+    (tick, row.upcast())
 }
 
 impl DrivePage {
-    pub fn new(window: &Rc<MainWindow>, drive: &Drive, disc: DiscInfo) -> Rc<Self> {
+    pub fn new(
+        window: &Rc<MainWindow>,
+        drive: &Drive,
+        disc: DiscInfo,
+        minimum_title_seconds: u32,
+    ) -> Rc<Self> {
+        let config = window.config();
+        let drive_id = drive.id();
+        let title_style = rip_prefs::resolved(&config, &drive_id, TITLE_LIST);
+        let name_is_editable = matches!(
+            rip_prefs::resolved(&config, &drive_id, DESTINATION),
+            "editable" | "drive_editable"
+        );
         let label = disc
             .label
             .clone()
@@ -145,7 +206,11 @@ impl DrivePage {
         );
         top.append(
             &gtk::Label::builder()
-                .label(format!("{}, {}", drive.model, drive.device))
+                .label(format!(
+                    "{}, {}",
+                    drive_row::drive_name(&config, drive),
+                    drive.device
+                ))
                 .xalign(0.0)
                 .css_classes(["dim-label"])
                 .build(),
@@ -179,6 +244,11 @@ impl DrivePage {
         name_row.append(&year_entry);
         name_row.append(&search_button);
         top.append(&name_row);
+
+        let folder_entry = gtk::Entry::builder().text(&label).hexpand(true).build();
+        let folder_row = labelled("Save as", &folder_entry);
+        folder_row.set_visible(name_is_editable);
+        top.append(&folder_row);
 
         let scrolling = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -221,11 +291,12 @@ impl DrivePage {
         let main_title = ripper::obvious_main_title(&disc.titles).map(|choice| choice.id);
         let mut title_rows = Vec::with_capacity(disc.titles.len());
         for title in &disc.titles {
-            let (tick, row) = title_row(title, main_title == Some(title.id));
+            let (tick, row) = title_row(title, main_title == Some(title.id), title_style);
             title_list.append(&row);
-            title_rows.push((title.id, tick, row));
+            title_rows.push((title.id, tick));
         }
         scrolling.append(&title_list);
+        scrolling.append(&drive_settings::section(window, drive));
 
         let footer = gtk::Box::builder()
             .spacing(12)
@@ -280,6 +351,8 @@ impl DrivePage {
             results_note,
             results,
             title_rows,
+            folder_entry,
+            minimum_title_seconds,
             title_note,
             status_label,
             progress_bar,
@@ -328,7 +401,7 @@ impl DrivePage {
             self,
             move |_, row| page.on_match_activated(row.index())
         ));
-        for (_, tick, _) in &self.title_rows {
+        for (_, tick) in &self.title_rows {
             tick.connect_toggled(glib::clone!(
                 #[weak(rename_to = page)]
                 self,
@@ -354,7 +427,7 @@ impl DrivePage {
 
     fn tick_only(&self, id: Option<u32>) {
         self.applying.set(true);
-        for (title_id, tick, _) in &self.title_rows {
+        for (title_id, tick) in &self.title_rows {
             tick.set_active(Some(*title_id) == id);
         }
         self.applying.set(false);
@@ -379,7 +452,7 @@ impl DrivePage {
     pub fn ticked_count(&self) -> usize {
         self.title_rows
             .iter()
-            .filter(|(_, tick, _)| tick.is_active())
+            .filter(|(_, tick)| tick.is_active())
             .count()
     }
 
@@ -393,7 +466,7 @@ impl DrivePage {
             .filter(|title| {
                 self.title_rows
                     .iter()
-                    .any(|(id, tick, _)| *id == title.id && tick.is_active())
+                    .any(|(id, tick)| *id == title.id && tick.is_active())
             })
             .map(|title| TitleChoice {
                 id: title.id,
@@ -411,8 +484,46 @@ impl DrivePage {
         Some(selection)
     }
 
-    pub fn disc_label(&self) -> Option<String> {
+    /// Tick every title, for a press that rips them all.
+    pub fn tick_all(&self) {
+        self.applying.set(true);
+        for (_, tick) in &self.title_rows {
+            tick.set_active(true);
+        }
+        self.applying.set(false);
+        self.on_ticks_applied();
+    }
+
+    /// The title that clearly stands out, if one does.
+    pub fn has_obvious_main_title(&self) -> bool {
+        ripper::obvious_main_title(&self.disc.titles).is_some()
+    }
+
+    /// What to name the rip's folder.
+    pub fn folder_name(&self) -> Option<String> {
+        let typed = self.folder_entry.text().trim().to_string();
+        if !typed.is_empty() {
+            return Some(typed);
+        }
         self.disc.label.clone()
+    }
+
+    pub fn minimum_title_seconds(&self) -> u32 {
+        self.minimum_title_seconds
+    }
+
+    /// The size the scan predicts for what is ticked.
+    pub fn ticked_bytes(&self) -> u64 {
+        self.disc
+            .titles
+            .iter()
+            .filter(|title| {
+                self.title_rows
+                    .iter()
+                    .any(|(id, tick)| *id == title.id && tick.is_active())
+            })
+            .map(|title| title.size_bytes)
+            .sum()
     }
 
     /// The match to carry to filing: only one a person clicked.
@@ -564,7 +675,12 @@ impl DrivePage {
     /// A person's pick always decides the ticks. The app's own first guess never
     /// overrides ticks a person has already changed.
     fn tick_title_of_runtime(&self, found: &Match, runtime: Option<f64>) {
-        if self.titles_changed_by_person.get() && !self.pick_is_a_persons.get() {
+        let is_locked = !matches!(
+            *self.shown_state.borrow(),
+            None | Some(PageState::Choosing { .. })
+        );
+        let person_decided = self.titles_changed_by_person.get() && !self.pick_is_a_persons.get();
+        if is_locked || person_decided {
             return;
         }
         let matching =
@@ -600,9 +716,10 @@ impl DrivePage {
         }
 
         let locked = !matches!(state, PageState::Choosing { .. });
-        for (_, tick, _) in &self.title_rows {
+        for (_, tick) in &self.title_rows {
             tick.set_sensitive(!locked);
         }
+        self.folder_entry.set_sensitive(!locked);
         match &state {
             PageState::Choosing { status } => {
                 self.main_button.set_label("Rip Selected");

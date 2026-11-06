@@ -2,6 +2,7 @@
 //!
 //! The protocol has no text label, so the ripping percentage is in the tooltip.
 
+use crate::drive_row::RowAction;
 use crate::{APP_ID, APP_NAME};
 use ksni::blocking::TrayMethods;
 use ksni::menu::{MenuItem, StandardItem};
@@ -16,18 +17,28 @@ const PANEL_CHECK: Duration = Duration::from_secs(2);
 /// Shown in the protocol's ID field, which panels use to remember an icon's settings.
 const TRAY_ID: &str = "ylr-auto";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayEvent {
     Ready,
     Unavailable,
     Show,
     Quit,
+    Drive { device: String, action: RowAction },
+}
+
+/// One line of the menu: what a drive's main button would do now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayDrive {
+    pub device: String,
+    pub text: String,
+    pub action: RowAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayState {
     pub icon: String,
     pub tooltip: String,
+    pub drives: Vec<TrayDrive>,
 }
 
 pub fn idle_icon() -> String {
@@ -76,20 +87,37 @@ impl ksni::Tray for Item {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        vec![
-            StandardItem {
-                label: format!("Show {APP_NAME}"),
-                activate: Box::new(|item: &mut Self| item.send(TrayEvent::Show)),
-                ..Default::default()
-            }
-            .into(),
+        let mut items: Vec<MenuItem<Self>> = vec![StandardItem {
+            label: format!("Show {APP_NAME}"),
+            activate: Box::new(|item: &mut Self| item.send(TrayEvent::Show)),
+            ..Default::default()
+        }
+        .into()];
+        for drive in &self.state.drives {
+            let (device, action) = (drive.device.clone(), drive.action);
+            items.push(
+                StandardItem {
+                    label: drive.text.clone(),
+                    activate: Box::new(move |item: &mut Self| {
+                        item.send(TrayEvent::Drive {
+                            device: device.clone(),
+                            action,
+                        });
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        items.push(
             StandardItem {
                 label: "Quit".to_string(),
                 activate: Box::new(|item: &mut Self| item.send(TrayEvent::Quit)),
                 ..Default::default()
             }
             .into(),
-        ]
+        );
+        items
     }
 }
 
@@ -142,6 +170,7 @@ fn run_tray_thread(events: &async_channel::Sender<TrayEvent>, states: &mpsc::Rec
             state: TrayState {
                 icon: idle_icon(),
                 tooltip: APP_NAME.to_string(),
+                drives: Vec::new(),
             },
             events: events.clone(),
         };

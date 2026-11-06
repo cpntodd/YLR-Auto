@@ -368,6 +368,7 @@ fn rip_request(device: &str, selection: RipSelection, destination: &Path) -> Rip
         selection,
         destination: destination.to_path_buf(),
         minimum_title_seconds: DEFAULT_MINIMUM_TITLE_SECONDS,
+        expected_bytes: None,
     }
 }
 
@@ -456,6 +457,15 @@ mod ripping {
         let fractions = overall_fractions(&updates);
         assert!(fractions.windows(2).all(|pair| pair[0] <= pair[1]));
         assert!(fractions.contains(&0.75), "{fractions:?}");
+        let positions: Vec<_> = updates
+            .iter()
+            .filter_map(|update| match update {
+                RipUpdate::Progress(progress) => progress.title_position,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(positions.first(), Some(&(1, 2)));
+        assert_eq!(positions.last(), Some(&(2, 2)));
         assert_eq!(fractions.last(), Some(&1.0));
     }
 

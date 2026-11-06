@@ -78,6 +78,7 @@ pub struct Paths {
     pub home: PathBuf,
     pub config_file: PathBuf,
     pub log_file: PathBuf,
+    pub rip_history: PathBuf,
     pub poster_cache: PathBuf,
     pub autostart_entry: PathBuf,
     pub menu_entry: PathBuf,
@@ -104,6 +105,7 @@ impl Paths {
         Self {
             config_file: config.join(APP_FOLDER).join("config.json"),
             log_file: state.join(APP_FOLDER).join("autosort.log"),
+            rip_history: state.join(APP_FOLDER).join("rip-history.json"),
             poster_cache: cache.join(APP_FOLDER).join("posters"),
             autostart_entry: config.join("autostart").join(format!("{APP_ID}.desktop")),
             menu_entry: data.join("applications").join(format!("{APP_ID}.desktop")),
@@ -243,6 +245,46 @@ impl Config {
         }
     }
 
+    /// A ripping setting: a drive's own with `drive_id`, otherwise the default.
+    pub fn ripping_value(&self, drive_id: Option<&str>, key: &str) -> Option<String> {
+        let ripping = self.values.get("ripping")?;
+        let scope = match drive_id {
+            Some(drive_id) => ripping.get("drives")?.get(drive_id)?,
+            None => ripping.get("defaults")?,
+        };
+        scope.get(key)?.as_str().map(str::to_string)
+    }
+
+    /// Sets a ripping setting, or clears it with None.
+    pub fn set_ripping_value(&mut self, drive_id: Option<&str>, key: &str, value: Option<&str>) {
+        let ripping = self.values.entry("ripping").or_insert_with(|| json!({}));
+        let path = match drive_id {
+            Some(drive_id) => vec!["drives", drive_id],
+            None => vec!["defaults"],
+        };
+        let mut scope = ripping;
+        for part in path {
+            if !scope.is_object() {
+                *scope = json!({});
+            }
+            scope = &mut scope[part];
+        }
+        if !scope.is_object() {
+            *scope = json!({});
+        }
+        let Value::Object(settings) = scope else {
+            return;
+        };
+        match value {
+            Some(value) => {
+                settings.insert(key.to_string(), json!(value));
+            }
+            None => {
+                settings.remove(key);
+            }
+        }
+    }
+
     pub fn tmdb_tag(&self) -> TmdbTag {
         TmdbTag::from_config(&self.text("tmdb_tag"))
     }
@@ -347,6 +389,7 @@ mod tests {
             home: root.to_path_buf(),
             config_file: root.join("config/app/config.json"),
             log_file: root.join("state/autosort.log"),
+            rip_history: root.join("state/rip-history.json"),
             poster_cache: root.join("cache/posters"),
             autostart_entry: root.join(format!("config/autostart/{APP_ID}.desktop")),
             menu_entry: root.join(format!("data/applications/{APP_ID}.desktop")),

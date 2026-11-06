@@ -4,11 +4,19 @@ use crate::about::AboutWindow;
 use crate::app::AppState;
 use crate::config::{sync_desktop_entries, Config, Launch, Paths};
 use crate::drive_page::{DrivePage, PageState, PickedMatch};
-use crate::drive_row::{self, ActiveDriveRip, DriveJob, DriveRow, JobState, RowAction};
+use crate::drive_row::{
+    self, ActiveDriveRip, DriveJob, DriveRow, JobState, RipMode, RowAction, RowContext,
+};
+use crate::drive_settings;
 use crate::logging;
+use crate::rip_history::{self, HistoryEntry};
 use crate::rip_panel::RipPanel;
+use crate::rip_prefs::{
+    self, ALERT_FAILED, ALERT_FINISHED, ALERT_NEEDS_INPUT, ALERT_SOUND, FAILURE, LAST_RIP_MODE,
+    ON_INSERT, RIP_ACTION, STOP,
+};
 use crate::settings;
-use crate::tray::{idle_icon, ripping_icon, TrayState};
+use crate::tray::{idle_icon, ripping_icon, TrayDrive, TrayState};
 use crate::widgets::{clear_box, elapsed_text, rate_text, run_in_background, size_text};
 use crate::APP_NAME;
 use adw::prelude::*;
@@ -26,9 +34,7 @@ use ylr_core::autosort::{self as core, AutoOutcome, Rip};
 use ylr_core::monitor::{
     self, ActiveRip, Drive, RipEvent, RipTracker, Snapshot, WindowTitleReader,
 };
-use ylr_core::ripper::{
-    self, DiscInfo, RipOutcome, RipReport, RipRequest, RipSelection, RipUpdate,
-};
+use ylr_core::ripper::{self, DiscInfo, RipOutcome, RipReport, RipRequest, RipUpdate};
 use ylr_core::tmdb::Tmdb;
 
 // Shown on a machine without MakeMKV, which is a normal way to first meet the app. The
@@ -46,6 +52,11 @@ const SCAN_INTERVAL_SECONDS: u32 = 30;
 const MONITOR_INTERVAL_SECONDS: u32 = 2;
 /// Often enough for a progress bar to look alive; makemkvcon's updates queue meanwhile.
 const DRIVE_JOB_TICK: Duration = Duration::from_millis(250);
+/// A MakeMKV window can hold a finished disc until its dialog is answered, so an eject
+/// keeps trying for ten minutes before saying that it could not.
+const EJECT_ATTEMPTS: u32 = 40;
+const EJECT_RETRY_SECONDS: u32 = 15;
+const SOUND_FOLDER: &str = "/usr/share/sounds/freedesktop/stereo";
 const FOLDER_REMOVAL_RETRIES: u32 = 10;
 const FOLDER_REMOVAL_RETRY_DELAY: Duration = Duration::from_millis(300);
 /// Drive state changes rarely and each drive read costs a udevadm subprocess.
@@ -353,6 +364,12 @@ pub struct MainWindow {
     drive_jobs: RefCell<HashMap<String, DriveJob>>,
     gui_held_drives: RefCell<BTreeSet<String>>,
     drive_pages: RefCell<HashMap<String, Rc<DrivePage>>>,
+    /// What each drive held at the last read, to notice a disc being inserted. Empty
+    /// before the first read, so discs already in at startup do not count.
+    known_discs: RefCell<Option<HashMap<String, Option<String>>>>,
+    /// What the pane's prompt shows, so a read that changes nothing does not rebuild it
+    /// and close a section someone has open.
+    shown_prompt: RefCell<Option<PromptKey>>,
     /// The drive shown in the right pane, if any.
     selected_drive: RefCell<Option<String>>,
     /// Rip folder to the TMDb match a person picked for it before ripping.
@@ -532,6 +549,8 @@ impl MainWindow {
             drive_jobs: RefCell::new(HashMap::new()),
             gui_held_drives: RefCell::new(BTreeSet::new()),
             drive_pages: RefCell::new(HashMap::new()),
+            known_discs: RefCell::new(None),
+            shown_prompt: RefCell::new(None),
             selected_drive: RefCell::new(None),
             picked_matches: RefCell::new(HashMap::new()),
             drive_cleanups_running: Cell::new(0),
@@ -920,6 +939,7 @@ impl MainWindow {
             *self.latest_drives.borrow_mut() = drives;
             self.forget_jobs_of_changed_discs();
             self.reselect_drive_row();
+            self.act_on_inserted_discs();
         }
         let mut busy_drives = self.tracker.borrow().busy_drives();
         busy_drives.extend(self.running_drive_devices());
@@ -1174,9 +1194,49 @@ impl MainWindow {
         let busy = self.tracker.borrow().busy_drives();
         for device in devices {
             if !busy.contains(&device) {
-                self.eject(&device);
+                self.eject_when_free(device, EJECT_ATTEMPTS);
             }
         }
+    }
+
+    /// Ejects after a rip, waiting out a MakeMKV window that still holds the disc. A new
+    /// rip on the drive, or the disc leaving it, ends the wait.
+    fn eject_when_free(self: &Rc<Self>, device: String, attempts_left: u32) {
+        let target = device.clone();
+        let window = self.clone();
+        run_in_background(
+            move || monitor::eject_drive(&target).map_err(|e| e.to_string()),
+            move |result| match result {
+                Ok(()) => {
+                    log::info!("Ejected {device}");
+                    window.polls_until_drives.set(0);
+                }
+                Err(e) if e.to_lowercase().contains("busy") && attempts_left > 1 => {
+                    log::info!("{device} is busy, trying to eject it again shortly");
+                    window.retry_eject_later(device, attempts_left - 1);
+                }
+                Err(e) => {
+                    log::warn!("{e}");
+                    window.toast(&e);
+                }
+            },
+        );
+    }
+
+    fn retry_eject_later(self: &Rc<Self>, device: String, attempts_left: u32) {
+        let window = self.clone();
+        glib::timeout_add_seconds_local_once(EJECT_RETRY_SECONDS, move || {
+            let has_new_rip = window.running_drive_devices().contains(&device)
+                || window.tracker.borrow().busy_drives().contains(&device);
+            let disc_is_gone = window
+                .latest_drives
+                .borrow()
+                .iter()
+                .any(|drive| drive.device == device && drive.media_kind.is_none());
+            if !has_new_rip && !disc_is_gone {
+                window.eject_when_free(device, attempts_left);
+            }
+        });
     }
 
     pub fn eject(self: &Rc<Self>, device: &str) {
@@ -1215,6 +1275,7 @@ impl MainWindow {
                     "{APP_NAME}: {status}, {} rip(s) to file",
                     self.rips.borrow().len()
                 ),
+                drives: self.tray_drives(),
             }
         } else {
             let mut described: Vec<String> = active_rips
@@ -1228,6 +1289,7 @@ impl MainWindow {
             TrayState {
                 icon: ripping_icon(),
                 tooltip: format!("{APP_NAME}: ripping {}", described.join(", ")),
+                drives: self.tray_drives(),
             }
         };
         app.show_tray_state(state);
@@ -1278,6 +1340,7 @@ impl MainWindow {
 
     fn show_drive_rows(&self) {
         let backend_available = ripper::backend_installed();
+        let config = self.config.borrow();
         let drives = self.latest_drives.borrow();
         let jobs = self.drive_jobs.borrow();
         let held = self.gui_held_drives.borrow();
@@ -1285,19 +1348,60 @@ impl MainWindow {
             let Some(drive) = drives.iter().find(|drive| drive.device == row.device) else {
                 continue;
             };
-            let view = drive_row::describe(
-                drive,
-                jobs.get(&row.device),
-                held.contains(&row.device),
+            let context = RowContext {
+                config: &config,
+                held_by_window: held.contains(&row.device),
                 backend_available,
-            );
-            row.show(view);
+            };
+            row.show(drive_row::describe(drive, jobs.get(&row.device), &context));
         }
         for (device, page) in self.drive_pages.borrow().iter() {
             if let Some(job) = jobs.get(device) {
                 page.show_state(page_state_of(job));
             }
         }
+    }
+
+    /// Show a change of settings or names at once.
+    pub fn refresh_drive_rows(&self) {
+        self.show_drive_rows();
+    }
+
+    fn tray_drives(&self) -> Vec<TrayDrive> {
+        let backend_available = ripper::backend_installed();
+        let config = self.config.borrow();
+        let jobs = self.drive_jobs.borrow();
+        let held = self.gui_held_drives.borrow();
+        self.latest_drives
+            .borrow()
+            .iter()
+            .filter_map(|drive| {
+                let context = RowContext {
+                    config: &config,
+                    held_by_window: held.contains(&drive.device),
+                    backend_available,
+                };
+                let view = drive_row::describe(drive, jobs.get(&drive.device), &context);
+                let button = view.button.filter(|button| button.enabled)?;
+                Some(TrayDrive {
+                    device: drive.device.clone(),
+                    text: format!("{}: {}", view.drive_name, button.label),
+                    action: button.action,
+                })
+            })
+            .collect()
+    }
+
+    /// An action chosen from the tray. Anything that needs a person brings the window up.
+    pub fn on_tray_drive_action(self: &Rc<Self>, device: &str, action: RowAction) {
+        let needs_window = matches!(
+            action,
+            RowAction::Open | RowAction::Stop | RowAction::Rip(RipMode::Choose)
+        );
+        if needs_window {
+            self.widget.present();
+        }
+        self.on_drive_action(device, action);
     }
 
     pub fn picked_match(&self, folder: &Path) -> Option<PickedMatch> {
@@ -1341,46 +1445,77 @@ impl MainWindow {
         };
         let page = self.drive_pages.borrow().get(&device).cloned();
         if let Some(page) = page {
+            *self.shown_prompt.borrow_mut() = None;
             self.detail.set_child(Some(&page.widget));
             return;
         }
+
+        let key = self.prompt_key(&device);
+        let still_shown = *self.shown_prompt.borrow() == Some(key.clone())
+            && self
+                .detail
+                .child()
+                .is_some_and(|child| child.is::<adw::StatusPage>());
+        if still_shown {
+            return;
+        }
+        *self.shown_prompt.borrow_mut() = Some(key);
         let prompt = self.drive_prompt(&device);
         self.detail.set_child(Some(&prompt));
     }
 
-    /// The pane for a drive with no opened disc.
-    fn drive_prompt(self: &Rc<Self>, device: &str) -> adw::StatusPage {
+    fn prompt_key(&self, device: &str) -> PromptKey {
         let drive = self
             .latest_drives
             .borrow()
             .iter()
             .find(|drive| drive.device == device)
             .cloned();
-        let is_busy = self
-            .drive_jobs
-            .borrow()
-            .get(device)
-            .is_some_and(DriveJob::is_running);
+        PromptKey {
+            device: device.to_string(),
+            drive,
+            is_busy: self
+                .drive_jobs
+                .borrow()
+                .get(device)
+                .is_some_and(DriveJob::is_running),
+            is_held: self.gui_held_drives.borrow().contains(device),
+        }
+    }
+
+    /// The pane for a drive with no opened disc.
+    fn drive_prompt(self: &Rc<Self>, device: &str) -> adw::StatusPage {
+        let key = self.prompt_key(device);
+        let name = key.drive.as_ref().map_or_else(
+            || device.to_string(),
+            |drive| drive_row::drive_name(&self.config.borrow(), drive),
+        );
         let prompt = adw::StatusPage::builder()
             .icon_name("media-optical-symbolic")
-            .title(drive.as_ref().map_or(device, |drive| drive.model.as_str()))
+            .title(&name)
             .build();
-        if is_busy {
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(24)
+            .build();
+        let has_disc = key
+            .drive
+            .as_ref()
+            .is_some_and(|drive| drive.media_kind.is_some());
+        if key.is_busy {
             prompt.set_description(Some("Scanning the disc for its titles."));
-        } else if let Some(drive) = drive.filter(|drive| drive.media_kind.is_some()) {
-            prompt.set_description(Some(
-                drive
-                    .disc_label
-                    .as_deref()
-                    .unwrap_or("A disc with no label"),
-            ));
+        } else if has_disc {
+            let label = key
+                .drive
+                .as_ref()
+                .and_then(|drive| drive.disc_label.as_deref())
+                .unwrap_or("A disc with no label");
+            prompt.set_description(Some(label));
             let open = gtk::Button::builder()
                 .label("Open")
                 .halign(gtk::Align::Center)
                 .css_classes(["pill", "suggested-action"])
-                .sensitive(
-                    ripper::backend_installed() && !self.gui_held_drives.borrow().contains(device),
-                )
+                .sensitive(ripper::backend_installed() && !key.is_held)
                 .build();
             let device = device.to_string();
             open.connect_clicked(glib::clone!(
@@ -1388,10 +1523,14 @@ impl MainWindow {
                 self,
                 move |_| window.on_drive_action(&device, RowAction::Open)
             ));
-            prompt.set_child(Some(&open));
+            content.append(&open);
         } else {
             prompt.set_description(Some("No disc in this drive."));
         }
+        if let Some(drive) = &key.drive {
+            content.append(&drive_settings::section(self, drive));
+        }
+        prompt.set_child(Some(&content));
         prompt
     }
 
@@ -1452,7 +1591,18 @@ impl MainWindow {
 
     fn on_drive_action(self: &Rc<Self>, device: &str, action: RowAction) {
         match action {
-            RowAction::Open => self.open_drive(device),
+            RowAction::Open | RowAction::Rip(RipMode::Choose) => {
+                self.remember_rip_mode(device, action);
+                self.scan_drive(device, ScanIntent::ShowPage, true);
+            }
+            RowAction::Rip(RipMode::Main) => {
+                self.remember_rip_mode(device, action);
+                self.scan_drive(device, ScanIntent::RipMainTitle, true);
+            }
+            RowAction::Rip(RipMode::All) => {
+                self.remember_rip_mode(device, action);
+                self.scan_drive(device, ScanIntent::RipAllTitles, true);
+            }
             RowAction::RipSelected => self.start_selected_rip(device),
             RowAction::CancelScan => {
                 if let Some(JobState::Scanning { cancel }) =
@@ -1465,9 +1615,82 @@ impl MainWindow {
         }
     }
 
-    /// Scan the disc and show its page. Pressing Open is a click on this drive, so the
-    /// right pane follows it.
-    fn open_drive(self: &Rc<Self>, device: &str) {
+    /// The next press of a drive's menu button repeats its last choice.
+    fn remember_rip_mode(&self, device: &str, action: RowAction) {
+        let RowAction::Rip(mode) = action else {
+            return;
+        };
+        let Some(drive_id) = self.drive_id_of(device) else {
+            return;
+        };
+        let uses_menu =
+            rip_prefs::resolved(&self.config.borrow(), &drive_id, RIP_ACTION) == "per_press";
+        if uses_menu {
+            self.update_config(|config| {
+                config.set_ripping_value(Some(&drive_id), LAST_RIP_MODE, Some(mode.key()));
+            });
+            self.save_settings();
+        }
+    }
+
+    fn drive_id_of(&self, device: &str) -> Option<String> {
+        self.latest_drives
+            .borrow()
+            .iter()
+            .find(|drive| drive.device == device)
+            .map(Drive::id)
+    }
+
+    /// Follow each drive's setting for a disc just inserted. The right pane stays put,
+    /// because nobody clicked anything.
+    fn act_on_inserted_discs(self: &Rc<Self>) {
+        let now: HashMap<String, Option<String>> = self
+            .latest_drives
+            .borrow()
+            .iter()
+            .map(|drive| {
+                let disc = drive
+                    .media_kind
+                    .as_ref()
+                    .map(|_| drive.disc_label.clone().unwrap_or_default());
+                (drive.device.clone(), disc)
+            })
+            .collect();
+        let previous = self.known_discs.borrow_mut().replace(now.clone());
+        let Some(previous) = previous else {
+            return;
+        };
+
+        for (device, disc) in now {
+            let was_inserted = disc.is_some() && previous.get(&device) != Some(&disc);
+            let is_free = !self.drive_jobs.borrow().contains_key(&device)
+                && !self.gui_held_drives.borrow().contains(&device);
+            if !was_inserted || !is_free || !ripper::backend_installed() {
+                continue;
+            }
+            let Some(drive_id) = self.drive_id_of(&device) else {
+                continue;
+            };
+            let (on_insert, rip_action) = {
+                let config = self.config.borrow();
+                (
+                    rip_prefs::resolved(&config, &drive_id, ON_INSERT),
+                    rip_prefs::resolved(&config, &drive_id, RIP_ACTION),
+                )
+            };
+            let intent = match (on_insert, rip_action) {
+                ("scan", _) => ScanIntent::ShowPage,
+                ("rip", "all") => ScanIntent::RipAllTitles,
+                ("rip", _) => ScanIntent::RipMainTitle,
+                _ => continue,
+            };
+            log::info!("{device}: a disc was inserted");
+            self.scan_drive(&device, intent, false);
+        }
+    }
+
+    /// Scan the disc. A press on this drive also brings its page to the right pane.
+    fn scan_drive(self: &Rc<Self>, device: &str, intent: ScanIntent, show_page: bool) {
         let disc_label = self
             .latest_drives
             .borrow()
@@ -1489,30 +1712,36 @@ impl MainWindow {
         );
         self.show_drive_rows();
 
-        let row = self
-            .card
-            .drive_rows
-            .borrow()
-            .iter()
-            .find(|row| row.device == device)
-            .map(|row| row.widget().clone());
-        *self.selected_drive.borrow_mut() = Some(device.to_string());
-        self.card.drive_list.select_row(row.as_ref());
-        self.show_selected_drive();
+        if show_page {
+            let row = self
+                .card
+                .drive_rows
+                .borrow()
+                .iter()
+                .find(|row| row.device == device)
+                .map(|row| row.widget().clone());
+            *self.selected_drive.borrow_mut() = Some(device.to_string());
+            self.card.drive_list.select_row(row.as_ref());
+            self.show_selected_drive();
+        }
 
+        let minimum = rip_prefs::minimum_title_seconds(&self.config.borrow());
         let target = device.to_string();
         let device = device.to_string();
         let window = self.clone();
         run_in_background(
-            move || {
-                let minimum = ripper::DEFAULT_MINIMUM_TITLE_SECONDS;
-                ripper::scan_disc(&target, minimum, &cancel)
-            },
-            move |result| window.on_drive_scanned(&device, result),
+            move || ripper::scan_disc(&target, minimum, &cancel),
+            move |result| window.on_drive_scanned(&device, intent, minimum, result),
         );
     }
 
-    fn on_drive_scanned(self: &Rc<Self>, device: &str, result: Result<DiscInfo, String>) {
+    fn on_drive_scanned(
+        self: &Rc<Self>,
+        device: &str,
+        intent: ScanIntent,
+        minimum: u32,
+        result: Result<DiscInfo, String>,
+    ) {
         let cancelled = matches!(
             self.drive_jobs.borrow().get(device).map(|job| &job.state),
             Some(JobState::Scanning { cancel }) if cancel.load(Ordering::Relaxed)
@@ -1531,18 +1760,28 @@ impl MainWindow {
             .iter()
             .find(|drive| drive.device == device)
             .cloned();
+        let mut rip_now = false;
         let next_state = match (result, drive) {
             (Err(reason), _) => {
                 log::warn!("{device}: {reason}");
-                self.notify_drive(device, "Could not scan a disc", &reason);
+                self.alert(Alert::Failed, device, "Could not scan a disc", &reason);
+                self.after_failed_disc(device);
                 JobState::Failed { reason }
             }
-            (Ok(disc), _) if disc.titles.is_empty() => JobState::Failed {
-                reason: format!(
+            (Ok(disc), _) if disc.titles.is_empty() => {
+                let reason = format!(
                     "No titles of {} minutes or longer on this disc.",
-                    ripper::DEFAULT_MINIMUM_TITLE_SECONDS / 60
-                ),
-            },
+                    minimum / 60
+                );
+                self.alert(
+                    Alert::Failed,
+                    device,
+                    "A disc has no titles to rip",
+                    &reason,
+                );
+                self.after_failed_disc(device);
+                JobState::Failed { reason }
+            }
             (Ok(_), None) => JobState::Failed {
                 reason: "The drive is no longer listed.".to_string(),
             },
@@ -1553,16 +1792,27 @@ impl MainWindow {
                     job.name = label.clone();
                 }
                 let title_count = disc.titles.len();
-                let page = DrivePage::new(self, &drive, disc);
+                let page = DrivePage::new(self, &drive, disc, minimum);
+                rip_now = match intent {
+                    ScanIntent::ShowPage => false,
+                    ScanIntent::RipMainTitle => page.has_obvious_main_title(),
+                    ScanIntent::RipAllTitles => {
+                        page.tick_all();
+                        true
+                    }
+                };
                 let ticked = page.ticked_count();
                 self.drive_pages
                     .borrow_mut()
                     .insert(device.to_string(), page);
-                self.notify_drive(
-                    device,
-                    "A disc is ready",
-                    "Choose its titles, then press Rip.",
-                );
+                if !rip_now {
+                    self.alert(
+                        Alert::NeedsInput,
+                        device,
+                        "A disc is ready",
+                        "Choose its titles, then press Rip.",
+                    );
+                }
                 JobState::Opened {
                     title_count,
                     ticked,
@@ -1576,14 +1826,27 @@ impl MainWindow {
         if self.selected_drive.borrow().as_deref() == Some(device) {
             self.show_selected_drive();
         }
+        if rip_now {
+            self.start_selected_rip(device);
+        }
         self.quit_if_drives_idle();
+    }
+
+    /// A failed disc that should not block the next one goes back out of the drive.
+    fn after_failed_disc(self: &Rc<Self>, device: &str) {
+        let Some(drive_id) = self.drive_id_of(device) else {
+            return;
+        };
+        if rip_prefs::resolved(&self.config.borrow(), &drive_id, FAILURE) == "eject" {
+            self.eject_when_free(device.to_string(), EJECT_ATTEMPTS);
+        }
     }
 
     /// Rips what the drive's page has ticked. Its folder is made off the GUI thread,
     /// because the rip folder is often on a network share.
     fn start_selected_rip(self: &Rc<Self>, device: &str) {
         let page = self.drive_pages.borrow().get(device).cloned();
-        let Some(page) = page else {
+        let (Some(page), Some(drive_id)) = (page, self.drive_id_of(device)) else {
             return;
         };
         let Some(selection) = page.selection() else {
@@ -1594,27 +1857,39 @@ impl MainWindow {
         }
         self.show_drive_rows();
 
-        let rip_dir = PathBuf::from(self.config.borrow().text("rip_dir"));
-        let label = page.disc_label();
+        let parent = PathBuf::from(rip_prefs::rip_parent_folder(
+            &self.config.borrow(),
+            &drive_id,
+        ));
+        let folder_name = page.folder_name();
+        let request_template = RipRequest {
+            device: device.to_string(),
+            selection,
+            destination: PathBuf::new(),
+            minimum_title_seconds: page.minimum_title_seconds(),
+            expected_bytes: Some(page.ticked_bytes()),
+        };
         let picked = page.picked_match();
         let device = device.to_string();
         let window = self.clone();
         run_in_background(
-            move || ripper::create_rip_folder(&rip_dir, label.as_deref()),
-            move |result| window.on_rip_folder_made(&device, selection, picked, result),
+            move || ripper::create_rip_folder(&parent, folder_name.as_deref()),
+            move |result| window.on_rip_folder_made(&device, request_template, picked, result),
         );
     }
 
     fn on_rip_folder_made(
         self: &Rc<Self>,
         device: &str,
-        selection: RipSelection,
+        mut request: RipRequest,
         picked: Option<PickedMatch>,
         result: Result<PathBuf, String>,
     ) {
         let next_state = match result {
             Err(reason) => {
                 log::warn!("{device}: {reason}");
+                self.alert(Alert::Failed, device, "Could not start a rip", &reason);
+                self.after_failed_disc(device);
                 JobState::Failed { reason }
             }
             Ok(folder) => {
@@ -1624,19 +1899,8 @@ impl MainWindow {
                         .insert(folder.clone(), picked);
                 }
                 log::info!("{device}: ripping to {}", folder.display());
-                let rip = ripper::start_rip(RipRequest {
-                    device: device.to_string(),
-                    selection,
-                    destination: folder.clone(),
-                    minimum_title_seconds: ripper::DEFAULT_MINIMUM_TITLE_SECONDS,
-                });
-                JobState::Ripping(ActiveDriveRip {
-                    rip,
-                    folder,
-                    status: "Opening the disc".to_string(),
-                    progress: None,
-                    stopping: false,
-                })
+                request.destination = folder;
+                begin_rip(request, false)
             }
         };
         if let Some(job) = self.drive_jobs.borrow_mut().get_mut(device) {
@@ -1671,22 +1935,49 @@ impl MainWindow {
     }
 
     fn on_drive_rip_finished(self: &Rc<Self>, device: &str, report: RipReport) {
-        let Some((name, folder)) = self
+        let finished_rip = self
             .drive_jobs
             .borrow()
             .get(device)
             .and_then(|job| match &job.state {
-                JobState::Ripping(active) => Some((job.name.clone(), active.folder.clone())),
+                JobState::Ripping(active) => Some((
+                    job.name.clone(),
+                    active.request.clone(),
+                    active.keep_partial,
+                    active.is_retry,
+                )),
                 _ => None,
-            })
-        else {
+            });
+        let Some((name, request, keep_partial, is_retry)) = finished_rip else {
             return;
         };
+        let folder = request.destination.clone();
+        let drive_id = self
+            .drive_id_of(device)
+            .unwrap_or_else(|| device.to_string());
+        let on_failure = rip_prefs::resolved(&self.config.borrow(), &drive_id, FAILURE);
+
+        if matches!(report.outcome, RipOutcome::Failed { .. }) && on_failure == "retry" && !is_retry
+        {
+            log::warn!("{name}: the rip failed, trying once more");
+            self.retry_drive_rip(device, request, report);
+            return;
+        }
+
+        let outcome_text = match &report.outcome {
+            RipOutcome::Completed => {
+                format!("Saved {} title(s)", report.finished_titles.len())
+            }
+            RipOutcome::Stopped => "Stopped".to_string(),
+            RipOutcome::Failed { reason } => format!("Failed: {reason}"),
+        };
+        self.record_history(&drive_id, &name, outcome_text);
 
         let next_state = match &report.outcome {
             RipOutcome::Completed => {
                 log::info!("{name}: saved {} title(s)", report.finished_titles.len());
-                self.notify_drive(
+                self.alert(
+                    Alert::Finished,
                     device,
                     &format!("{name} is ripped"),
                     "Its titles are ready to file.",
@@ -1703,17 +1994,27 @@ impl MainWindow {
             }
             RipOutcome::Stopped => {
                 log::info!("{name}: stopped");
-                self.remove_stopped_rip_files(&folder, &name, report);
+                if keep_partial {
+                    self.leave_for_review(Some(&folder), &name, "the rip was stopped");
+                } else {
+                    self.remove_stopped_rip_files(&folder, &name, report);
+                }
                 None
             }
             RipOutcome::Failed { reason } => {
                 log::warn!("{name}: {reason}");
-                self.notify_drive(device, &format!("{name} could not be ripped"), reason);
+                self.alert(
+                    Alert::Failed,
+                    device,
+                    &format!("{name} could not be ripped"),
+                    reason,
+                );
                 let has_files =
                     !report.finished_titles.is_empty() || !report.incomplete_titles.is_empty();
                 if has_files {
                     self.leave_for_review(Some(&folder), &name, "the rip failed");
                 }
+                self.after_failed_disc(device);
                 Some(JobState::Failed {
                     reason: reason.clone(),
                 })
@@ -1739,6 +2040,54 @@ impl MainWindow {
             }
         }
         self.quit_if_drives_idle();
+    }
+
+    /// Clears what the failed attempt left, whole titles too. The second attempt rips them
+    /// again, and would not count a file that already existed as its own.
+    fn retry_drive_rip(self: &Rc<Self>, device: &str, request: RipRequest, report: RipReport) {
+        if let Some(job) = self.drive_jobs.borrow_mut().get_mut(device) {
+            job.state = JobState::Preparing;
+        }
+        let device = device.to_string();
+        let window = self.clone();
+        run_in_background(
+            move || {
+                let left_behind = report
+                    .incomplete_titles
+                    .into_iter()
+                    .chain(report.finished_titles);
+                for path in left_behind {
+                    if let Err(e) = fs::remove_file(&path) {
+                        log::warn!("Could not remove {}: {e}", path.display());
+                    }
+                }
+                Ok(())
+            },
+            move |_: Result<(), String>| {
+                if let Some(job) = window.drive_jobs.borrow_mut().get_mut(&device) {
+                    job.state = begin_rip(request, true);
+                }
+                window.show_drive_rows();
+            },
+        );
+    }
+
+    fn record_history(&self, drive_id: &str, name: &str, outcome: String) {
+        let path = self.paths.rip_history.clone();
+        let entry = HistoryEntry {
+            drive_id: drive_id.to_string(),
+            finished_at: glib::DateTime::now_utc().map_or(0, |now| now.to_unix()),
+            name: name.to_string(),
+            outcome,
+        };
+        run_in_background(
+            move || rip_history::append(&path, entry).map_err(|e| e.to_string()),
+            |result| {
+                if let Err(e) = result {
+                    log::warn!("Could not record the rip in its drive's history: {e}");
+                }
+            },
+        );
     }
 
     /// Unfinished titles are removed. Whole titles from earlier in the rip stay and wait
@@ -1776,37 +2125,74 @@ impl MainWindow {
         );
     }
 
-    fn notify_drive(&self, device: &str, title: &str, body: &str) {
+    /// Tells the user, as far as the alert settings allow.
+    fn alert(&self, alert: Alert, device: &str, title: &str, body: &str) {
+        let config = self.config.borrow();
+        if !rip_prefs::alert_enabled(&config, alert.setting()) {
+            return;
+        }
         if let Some(app) = self.app.upgrade() {
             app.notify(&format!("drive-{device}"), title, body, None);
         }
+        if rip_prefs::alert_enabled(&config, ALERT_SOUND) {
+            let file = Path::new(SOUND_FOLDER).join(alert.sound_file());
+            if !monitor::play_sound(&file) {
+                gtk::prelude::WidgetExt::display(&self.widget).beep();
+            }
+        }
     }
 
+    /// Follows the drive's Stop setting.
     fn confirm_stop_drive_rip(self: &Rc<Self>, device: &str) {
+        let drive_id = self
+            .drive_id_of(device)
+            .unwrap_or_else(|| device.to_string());
+        let stop_setting = rip_prefs::resolved(&self.config.borrow(), &drive_id, STOP);
+        if stop_setting == "remove" {
+            self.stop_drive_rip(device, false);
+            return;
+        }
+
         let name = self
             .drive_jobs
             .borrow()
             .get(device)
             .map_or_else(|| device.to_string(), |job| job.name.clone());
-        let dialog = adw::AlertDialog::new(
-            Some(&format!("Stop ripping {name}?")),
-            Some("The title being saved is removed. Titles already finished are kept."),
-        );
-        dialog.add_responses(&[("keep", "Keep Ripping"), ("stop", "Stop")]);
-        dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+        let body = match stop_setting {
+            "confirm_keep" => "The unfinished title stays in its folder, for you to deal with.",
+            "ask" => "Titles already finished are kept. What about the title being saved?",
+            _ => "The title being saved is removed. Titles already finished are kept.",
+        };
+        let dialog = adw::AlertDialog::new(Some(&format!("Stop ripping {name}?")), Some(body));
+        dialog.add_response("keep", "Keep Ripping");
+        match stop_setting {
+            "confirm_keep" => {
+                dialog.add_response("stop_keep", "Stop");
+                dialog.set_response_appearance("stop_keep", adw::ResponseAppearance::Destructive);
+            }
+            "ask" => {
+                dialog.add_response("stop_keep", "Stop and Keep It");
+                dialog.add_response("stop_remove", "Stop and Remove It");
+                dialog.set_response_appearance("stop_remove", adw::ResponseAppearance::Destructive);
+            }
+            _ => {
+                dialog.add_response("stop_remove", "Stop");
+                dialog.set_response_appearance("stop_remove", adw::ResponseAppearance::Destructive);
+            }
+        }
         dialog.set_default_response(Some("keep"));
         dialog.set_close_response("keep");
         let device = device.to_string();
         let window = self.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "stop" {
-                window.stop_drive_rip(&device);
-            }
+        dialog.connect_response(None, move |_, response| match response {
+            "stop_keep" => window.stop_drive_rip(&device, true),
+            "stop_remove" => window.stop_drive_rip(&device, false),
+            _ => {}
         });
         dialog.present(Some(&self.widget));
     }
 
-    fn stop_drive_rip(&self, device: &str) {
+    fn stop_drive_rip(&self, device: &str, keep_partial: bool) {
         if let Some(JobState::Ripping(active)) = self
             .drive_jobs
             .borrow_mut()
@@ -1815,6 +2201,7 @@ impl MainWindow {
         {
             active.rip.stop();
             active.stopping = true;
+            active.keep_partial = keep_partial;
         }
         self.show_drive_rows();
     }
@@ -1826,7 +2213,8 @@ impl MainWindow {
         let dialog = adw::AlertDialog::new(
             Some("Stop ripping and quit?"),
             Some(&format!(
-                "{running} drive(s) are busy. Their unfinished titles are removed."
+                "{running} drive(s) are busy. Unfinished titles follow each drive's Stop setting, \
+                 or are removed if it asks each time."
             )),
         );
         dialog.add_responses(&[("keep", "Keep Ripping"), ("quit", "Stop and Quit")]);
@@ -1856,7 +2244,10 @@ impl MainWindow {
                 }
             };
             if !is_scanning {
-                self.stop_drive_rip(&device);
+                let drive_id = self.drive_id_of(&device).unwrap_or_else(|| device.clone());
+                let keep_partial =
+                    rip_prefs::resolved(&self.config.borrow(), &drive_id, STOP) == "confirm_keep";
+                self.stop_drive_rip(&device, keep_partial);
             }
         }
         self.quit_if_drives_idle();
@@ -2052,6 +2443,63 @@ impl MainWindow {
 }
 
 /// A rip MakeMKV has stopped writing.
+/// What a finished scan should lead to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanIntent {
+    ShowPage,
+    /// Rip the main title if one stands out, otherwise wait on the page.
+    RipMainTitle,
+    RipAllTitles,
+}
+
+/// What the pane's prompt depends on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptKey {
+    device: String,
+    drive: Option<Drive>,
+    is_busy: bool,
+    is_held: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Alert {
+    Finished,
+    Failed,
+    NeedsInput,
+}
+
+impl Alert {
+    fn setting(self) -> &'static str {
+        match self {
+            Self::Finished => ALERT_FINISHED,
+            Self::Failed => ALERT_FAILED,
+            Self::NeedsInput => ALERT_NEEDS_INPUT,
+        }
+    }
+
+    fn sound_file(self) -> &'static str {
+        match self {
+            Self::Finished => "complete.oga",
+            Self::Failed => "dialog-error.oga",
+            Self::NeedsInput => "message-new-instant.oga",
+        }
+    }
+}
+
+fn begin_rip(request: RipRequest, is_retry: bool) -> JobState {
+    let rip = ripper::start_rip(request.clone());
+    JobState::Ripping(Box::new(ActiveDriveRip {
+        rip,
+        folder: request.destination.clone(),
+        request,
+        status: "Opening the disc".to_string(),
+        progress: None,
+        stopping: false,
+        keep_partial: false,
+        is_retry,
+    }))
+}
+
 /// What a drive's page shows for its job.
 fn page_state_of(job: &DriveJob) -> PageState {
     match &job.state {

@@ -96,6 +96,7 @@ impl AppState {
         logging::init(&self.paths.log_file);
         let config = Config::load(&self.paths, None);
         self.apply_theme(config.flag("use_system_theme"));
+        load_drive_row_styles();
 
         let show = gio::SimpleAction::new("show", None);
         show.connect_activate(glib::clone!(
@@ -172,6 +173,11 @@ impl AppState {
             TrayEvent::Unavailable => self.on_tray_lost(),
             TrayEvent::Show => self.show_window(),
             TrayEvent::Quit => self.request_quit(),
+            TrayEvent::Drive { device, action } => {
+                if let Some(window) = self.window() {
+                    window.on_tray_drive_action(&device, action);
+                }
+            }
         }
     }
 
@@ -247,6 +253,35 @@ impl AppState {
         );
         *self.theme_provider.borrow_mut() = Some(provider);
     }
+}
+
+/// The drive row's optional coloured looks. These use the theme's own colours, so they
+/// suit both the light and dark themes and need no reloading when the theme changes.
+const DRIVE_ROW_CSS: &str = "
+.ylr-pill {
+  border-radius: 999px;
+  padding: 0 6px;
+  background-color: alpha(currentColor, 0.1);
+}
+.ylr-pill.ylr-state-busy { background-color: @accent_bg_color; color: @accent_fg_color; }
+.ylr-pill.ylr-state-done { background-color: @success_bg_color; color: @success_fg_color; }
+.ylr-pill.ylr-state-failed { background-color: @error_bg_color; color: @error_fg_color; }
+row.ylr-state-busy { background-color: alpha(@accent_bg_color, 0.2); }
+row.ylr-state-done { background-color: alpha(@success_bg_color, 0.2); }
+row.ylr-state-failed { background-color: alpha(@error_bg_color, 0.2); }
+";
+
+fn load_drive_row_styles() {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(DRIVE_ROW_CSS);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
 
 pub fn run() -> ExitCode {

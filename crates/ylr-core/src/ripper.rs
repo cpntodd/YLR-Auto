@@ -579,6 +579,9 @@ pub struct RipRequest {
     pub selection: RipSelection,
     pub destination: PathBuf,
     pub minimum_title_seconds: u32,
+    /// The size the scan predicted for the whole rip, to report speed. makemkvcon's
+    /// progress is a fraction, so speed can only be derived from this.
+    pub expected_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -589,6 +592,10 @@ pub struct RipProgress {
     pub overall_fraction: f64,
     /// None until an estimate means something.
     pub seconds_left: Option<u64>,
+    /// Which of the chosen titles this is, and how many there are. None when ripping
+    /// every title, because makemkvcon runs those as one operation.
+    pub title_position: Option<(usize, usize)>,
+    pub bytes_per_second: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -695,6 +702,7 @@ struct PlannedRun {
     title_argument: String,
     fraction_before: f64,
     fraction_of_whole: f64,
+    title_position: Option<(usize, usize)>,
 }
 
 fn plan_runs(selection: &RipSelection) -> Vec<PlannedRun> {
@@ -704,6 +712,7 @@ fn plan_runs(selection: &RipSelection) -> Vec<PlannedRun> {
                 title_argument: "all".to_string(),
                 fraction_before: 0.0,
                 fraction_of_whole: 1.0,
+                title_position: None,
             };
             return vec![everything];
         }
@@ -721,12 +730,13 @@ fn plan_runs(selection: &RipSelection) -> Vec<PlannedRun> {
 
     let mut fraction_before = 0.0;
     let mut runs = Vec::with_capacity(titles.len());
-    for title in titles {
+    for (index, title) in titles.iter().enumerate() {
         let fraction_of_whole = share_of(title);
         runs.push(PlannedRun {
             title_argument: title.id.to_string(),
             fraction_before,
             fraction_of_whole,
+            title_position: Some((index + 1, titles.len())),
         });
         fraction_before += fraction_of_whole;
     }
@@ -761,6 +771,7 @@ pub fn estimate_seconds_left(elapsed_seconds: f64, overall_fraction: f64) -> Opt
 struct RunReporter<'a> {
     run: &'a PlannedRun,
     updates: &'a Sender<RipUpdate>,
+    expected_bytes: Option<u64>,
     /// When saving began across the whole rip, for the estimate.
     saving_started: &'a mut Option<Instant>,
     saving: bool,
@@ -794,6 +805,11 @@ impl RunReporter<'_> {
             title_fraction: title as f64 / maximum as f64,
             overall_fraction,
             seconds_left: estimate_seconds_left(elapsed, overall_fraction),
+            title_position: self.run.title_position,
+            bytes_per_second: self
+                .expected_bytes
+                .filter(|_| elapsed >= ESTIMATE_MINIMUM_SECONDS)
+                .map(|bytes| bytes as f64 * overall_fraction / elapsed),
         };
         self.send(RipUpdate::Progress(progress));
     }
@@ -880,6 +896,7 @@ fn run_every_title(
         let mut reporter = RunReporter {
             run: &run,
             updates,
+            expected_bytes: request.expected_bytes,
             saving_started: &mut saving_started,
             saving: false,
             reported_fraction: run.fraction_before,

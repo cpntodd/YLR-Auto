@@ -1,6 +1,10 @@
 //! The settings dialog: API key and folders, saved when it closes.
 
-use crate::config::{sync_desktop_entries, Launch, DESTINATIONS, MANUAL_KEY};
+use crate::config::{sync_desktop_entries, Config, Launch, DESTINATIONS, MANUAL_KEY};
+use crate::rip_prefs::{
+    self, ALERT_FAILED, ALERT_FINISHED, ALERT_NEEDS_INPUT, ALERT_SOUND, MINIMUM_MINUTES, OPTIONS,
+    PRESETS,
+};
 use crate::widgets::run_in_background;
 use crate::window::MainWindow;
 use crate::APP_NAME;
@@ -85,11 +89,140 @@ fn switch_row(title: &str, subtitle: &str, active: bool) -> adw::SwitchRow {
         .build()
 }
 
+const ALERTS: [(&str, &str); 4] = [
+    (ALERT_FINISHED, "When a rip finishes"),
+    (ALERT_FAILED, "When a scan or rip fails"),
+    (ALERT_NEEDS_INPUT, "When a disc needs you"),
+    (ALERT_SOUND, "Play a sound with these"),
+];
+const MINIMUM_TITLE_MINUTES_LIMIT: f64 = 600.0;
+
+/// The Ripping page's controls, read back when the dialog closes.
+struct RippingControls {
+    combos: Vec<(&'static str, adw::ComboRow)>,
+    minimum_row: adw::SpinRow,
+    alert_rows: Vec<(&'static str, adw::SwitchRow)>,
+}
+
+impl RippingControls {
+    fn save_into(&self, config: &mut Config) {
+        for (key, row) in &self.combos {
+            let chosen = rip_prefs::option(key)
+                .and_then(|option| option.choices.get(row.selected() as usize))
+                .map(|(value, _)| *value);
+            config.set_ripping_value(None, key, chosen);
+        }
+        let minutes = (self.minimum_row.value() as u32).to_string();
+        config.set_ripping_value(None, MINIMUM_MINUTES, Some(&minutes));
+        for (key, row) in &self.alert_rows {
+            let value = if row.is_active() { "on" } else { "off" };
+            config.set_ripping_value(None, key, Some(value));
+        }
+    }
+}
+
+fn select_choice(row: &adw::ComboRow, key: &str, value: &str) {
+    let position = rip_prefs::option(key).and_then(|option| {
+        option
+            .choices
+            .iter()
+            .position(|(choice, _)| *choice == value)
+    });
+    if let Some(position) = position {
+        row.set_selected(position as u32);
+    }
+}
+
+fn ripping_page(config: &Config) -> (adw::PreferencesPage, RippingControls) {
+    let page = adw::PreferencesPage::builder()
+        .title("Ripping")
+        .icon_name("media-optical-symbolic")
+        .build();
+
+    let defaults = adw::PreferencesGroup::builder()
+        .title("Defaults for every drive")
+        .description("A drive's page can override any of these under Drive settings.")
+        .build();
+    let mut combos = Vec::with_capacity(OPTIONS.len());
+    for option in &OPTIONS {
+        let labels: Vec<&str> = option.choices.iter().map(|(_, label)| *label).collect();
+        let row = adw::ComboRow::builder()
+            .title(option.title)
+            .model(&gtk::StringList::new(&labels))
+            .build();
+        select_choice(
+            &row,
+            option.key,
+            rip_prefs::resolved(config, "", option.key),
+        );
+        defaults.add(&row);
+        combos.push((option.key, row));
+    }
+    let minimum_row = adw::SpinRow::with_range(0.0, MINIMUM_TITLE_MINUTES_LIMIT, 1.0);
+    minimum_row.set_title("Ignore titles shorter than (minutes)");
+    minimum_row.set_value(f64::from(rip_prefs::minimum_title_seconds(config) / 60));
+    defaults.add(&minimum_row);
+
+    let presets = adw::PreferencesGroup::builder()
+        .title("Presets")
+        .description("Sets the drive button, inserted discs, Stop and failures below.")
+        .build();
+    for preset in &PRESETS {
+        let row = adw::ActionRow::builder()
+            .title(preset.name)
+            .subtitle(preset.description)
+            .build();
+        let apply = gtk::Button::builder()
+            .label("Use")
+            .valign(gtk::Align::Center)
+            .build();
+        apply.update_property(&[gtk::accessible::Property::Label(&format!(
+            "Use the {} preset",
+            preset.name
+        ))]);
+        let rows = combos.clone();
+        apply.connect_clicked(move |_| {
+            for (key, value) in preset.values {
+                if let Some((_, row)) = rows.iter().find(|(row_key, _)| *row_key == key) {
+                    select_choice(row, key, value);
+                }
+            }
+        });
+        row.add_suffix(&apply);
+        presets.add(&row);
+    }
+    page.add(&presets);
+    page.add(&defaults);
+
+    let alerts = adw::PreferencesGroup::builder().title("Alerts").build();
+    let alert_rows: Vec<(&'static str, adw::SwitchRow)> = ALERTS
+        .iter()
+        .map(|(key, title)| {
+            let row = switch_row(title, "", rip_prefs::alert_enabled(config, key));
+            alerts.add(&row);
+            (*key, row)
+        })
+        .collect();
+    page.add(&alerts);
+
+    let controls = RippingControls {
+        combos,
+        minimum_row,
+        alert_rows,
+    };
+    (page, controls)
+}
+
 pub fn present(window: &Rc<MainWindow>) {
     let config = window.config();
     let dialog = adw::PreferencesDialog::builder().title("Settings").build();
-    let page = adw::PreferencesPage::new();
+    let page = adw::PreferencesPage::builder()
+        .title("General")
+        .icon_name("preferences-system-symbolic")
+        .build();
     dialog.add(&page);
+    let (ripping, ripping_controls) = ripping_page(&config);
+    dialog.add(&ripping);
 
     let tmdb_group = adw::PreferencesGroup::builder()
         .title("TMDb")
@@ -194,7 +327,7 @@ pub fn present(window: &Rc<MainWindow>) {
 
     let folders = adw::PreferencesGroup::builder().title("Folders").build();
     let rip_row = adw::EntryRow::builder()
-        .title("Rip folder (MakeMKV destination)")
+        .title("Rip folder")
         .text(config.text("rip_dir"))
         .build();
     folders.add(&rip_row);
@@ -252,6 +385,7 @@ pub fn present(window: &Rc<MainWindow>) {
         for (key, row) in &library_rows {
             config.set_library(key, row.text().trim());
         }
+        ripping_controls.save_into(&mut config);
         let start_at_login = config.flag("start_at_login");
         let use_system_theme = config.flag("use_system_theme");
         let tag_changed = config.tmdb_tag() != previous_tag;
@@ -261,6 +395,7 @@ pub fn present(window: &Rc<MainWindow>) {
         sync_desktop_entries(window.paths(), &Launch::current(), start_at_login);
         window.apply_theme(use_system_theme);
         window.apply_config();
+        window.refresh_drive_rows();
         if tag_changed {
             window.refresh_destinations();
         }

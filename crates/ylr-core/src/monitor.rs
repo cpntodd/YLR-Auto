@@ -166,12 +166,35 @@ fn is_opened_for_writing(fdinfo_path: &Path) -> Option<bool> {
     Some(false)
 }
 
+/// The drives a process reads. MakeMKV may read through /dev/sgN alone. A window not in
+/// single-drive mode holds that device for every drive at once, so it identifies the
+/// source only when there is exactly one; guessing could eject another rip's disc.
+pub fn source_drives(
+    block_devices: BTreeSet<String>,
+    scsi_generic_names: &BTreeSet<String>,
+    scsi_generic_root: &Path,
+) -> BTreeSet<String> {
+    if !block_devices.is_empty() {
+        return block_devices;
+    }
+    let held: BTreeSet<String> = scsi_generic_names
+        .iter()
+        .filter_map(|name| drive_of_scsi_generic(scsi_generic_root, name))
+        .collect();
+    if held.len() == 1 {
+        held
+    } else {
+        BTreeSet::new()
+    }
+}
+
 /// Files one process is writing, each linked to the drives that process reads, so two
 /// drives ripping at once are never confused. The process can exit during the walk,
 /// and an exited process has no files, so a read failure is not an error here.
 fn inspect_descriptors(proc_dir: &Path, pid: u32) -> Vec<OutputFile> {
     let mut outputs = Vec::new();
     let mut drives = BTreeSet::new();
+    let mut scsi_generic_names = BTreeSet::new();
     let Ok(descriptors) = fs::read_dir(proc_dir.join("fd")) else {
         return outputs;
     };
@@ -182,6 +205,8 @@ fn inspect_descriptors(proc_dir: &Path, pid: u32) -> Vec<OutputFile> {
         let text = target.to_string_lossy();
         if SOURCE_DEVICE.is_match(&text) {
             drives.insert(text.into_owned());
+        } else if let Some(name) = text.strip_prefix("/dev/").filter(|n| n.starts_with("sg")) {
+            scsi_generic_names.insert(name.to_string());
         } else if text.to_lowercase().ends_with(".mkv") {
             let fdinfo = proc_dir.join("fdinfo").join(descriptor.file_name());
             if is_opened_for_writing(&fdinfo) != Some(true) {
@@ -199,6 +224,7 @@ fn inspect_descriptors(proc_dir: &Path, pid: u32) -> Vec<OutputFile> {
             });
         }
     }
+    let drives = source_drives(drives, &scsi_generic_names, Path::new(SCSI_GENERIC_ROOT));
     for output in &mut outputs {
         output.source_drives = drives.clone();
     }
@@ -818,6 +844,15 @@ pub struct Drive {
     /// "Blu-ray", "HD DVD", "DVD", "CD" or "Disc"; None when empty.
     pub media_kind: Option<String>,
     pub disc_label: Option<String>,
+    /// The drive's own serial, which survives /dev/srN changing.
+    pub serial: Option<String>,
+}
+
+impl Drive {
+    /// What settings for this drive are saved under.
+    pub fn id(&self) -> String {
+        self.serial.clone().unwrap_or_else(|| self.device.clone())
+    }
 }
 
 fn media_kind(properties: &HashMap<&str, &str>) -> Option<String> {
@@ -856,6 +891,11 @@ pub fn parse_drive_properties(device: &str, udev_output: &str) -> Drive {
         model,
         media_kind: kind,
         disc_label: label,
+        serial: properties
+            .get("ID_SERIAL_SHORT")
+            .or_else(|| properties.get("ID_SERIAL"))
+            .filter(|serial| !serial.is_empty())
+            .map(|serial| serial.to_string()),
     }
 }
 
@@ -916,6 +956,37 @@ pub fn eject_drive(device: &str) -> io::Result<()> {
     Err(io::Error::other(format!(
         "Could not eject {device}: {detail}. Close the disc in MakeMKV and try again."
     )))
+}
+
+/// Sound players tried in order, because no one of them is on every desktop.
+const SOUND_PLAYERS: [&str; 3] = ["pw-play", "paplay", "ogg123"];
+
+/// Play a sound file with whichever player exists, returning at once. False if the file
+/// or a player is missing, so the caller can fall back. Runs with the host's environment,
+/// so it works from inside the AppImage.
+pub fn play_sound(file: &Path) -> bool {
+    if !file.is_file() {
+        return false;
+    }
+    let Some(player) = SOUND_PLAYERS.iter().find(|player| which(player).is_some()) else {
+        return false;
+    };
+    let spawned = Command::new(player)
+        .arg(file)
+        .env_clear()
+        .envs(host_environment())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return false;
+    };
+    thread::spawn(move || {
+        // Reaping is the only purpose, and the exit status is not used.
+        let _ = child.wait();
+    });
+    true
 }
 
 /// Start a MakeMKV instance detached, so it outlives this app. In single-drive mode

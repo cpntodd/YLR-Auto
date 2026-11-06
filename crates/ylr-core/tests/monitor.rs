@@ -457,6 +457,49 @@ mod own_rips_and_held_drives {
     }
 
     #[test]
+    fn a_lone_scsi_device_identifies_the_source_drive() {
+        let scsi_generic = TempDir::new().unwrap();
+        fs::create_dir_all(scsi_generic.path().join("sg3/device/block/sr2")).unwrap();
+        let names = BTreeSet::from(["sg3".to_string()]);
+
+        let drives = source_drives(BTreeSet::new(), &names, scsi_generic.path());
+
+        assert_eq!(drives, BTreeSet::from(["/dev/sr2".to_string()]));
+    }
+
+    #[test]
+    fn several_scsi_devices_identify_no_drive() {
+        let scsi_generic = TempDir::new().unwrap();
+        fs::create_dir_all(scsi_generic.path().join("sg1/device/block/sr0")).unwrap();
+        fs::create_dir_all(scsi_generic.path().join("sg3/device/block/sr2")).unwrap();
+        let names = BTreeSet::from(["sg1".to_string(), "sg3".to_string()]);
+
+        let drives = source_drives(BTreeSet::new(), &names, scsi_generic.path());
+
+        assert!(drives.is_empty());
+    }
+
+    #[test]
+    fn a_drive_held_directly_needs_no_scsi_device() {
+        let scsi_generic = TempDir::new().unwrap();
+        let direct = BTreeSet::from(["/dev/sr0".to_string()]);
+        let names = BTreeSet::from(["sg3".to_string()]);
+
+        let drives = source_drives(direct.clone(), &names, scsi_generic.path());
+
+        assert_eq!(drives, direct);
+    }
+
+    #[test]
+    fn a_drive_is_named_by_its_serial_or_else_its_device() {
+        let with_serial =
+            parse_drive_properties("/dev/sr0", "ID_SERIAL_SHORT=ABC123\nID_MODEL=X\n");
+        assert_eq!(with_serial.id(), "ABC123");
+        let without = parse_drive_properties("/dev/sr1", "ID_MODEL=X\n");
+        assert_eq!(without.id(), "/dev/sr1");
+    }
+
+    #[test]
     fn finds_drives_held_directly_or_through_their_scsi_device() {
         let proc_root = TempDir::new().unwrap();
         let scsi_generic = TempDir::new().unwrap();
