@@ -1,6 +1,6 @@
-.TH YLR-AUTO 1 "November 2026" "YLR-Auto 1.1.1" "User Commands"
+.TH YLR-AUTO 1 "November 2026" "YLR-Auto 2.0.0" "User Commands"
 .SH NAME
-ylr-auto \- companion for MakeMKV that files finished rips into Jellyfin
+ylr-auto \- rip discs with MakeMKV and file them into Jellyfin
 .SH SYNOPSIS
 .B ylr-auto
 .RB [ \-\-background ]
@@ -9,14 +9,15 @@ ylr-auto \- companion for MakeMKV that files finished rips into Jellyfin
 .B \-\-version
 .SH DESCRIPTION
 .B ylr-auto
-shows what MakeMKV and each optical drive are doing, then files finished rips
-into Jellyfin libraries using names and posters from TMDb. Films that match
-exactly one TMDb entry by name and runtime can be filed automatically, and
-anything uncertain waits for you. MakeMKV is a separate program and is not
-included.
+rips discs from each optical drive through makemkvcon, and watches rips started
+in MakeMKV's own window. It files finished rips into Jellyfin libraries using
+names and posters from TMDb. Films that match exactly one TMDb entry by name and
+runtime, or the runtime of a film you picked before ripping, can be filed
+automatically, and anything uncertain waits for you. MakeMKV is a separate
+program and is not included.
 .PP
-Closing the window keeps the program monitoring from the tray. Use the tray
-menu to quit.
+Closing the window keeps the program and its rips running from the tray. Use the
+tray menu to quit, which warns first and stops any rips.
 .SH OPTIONS
 .TP
 .B \-\-background

@@ -4,10 +4,10 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>YLR-Auto</name>
-  <summary>Watch MakeMKV and file finished rips into Jellyfin</summary>
+  <summary>Rip discs with MakeMKV and file them into Jellyfin</summary>
   <description>
-    <p>A companion for MakeMKV. It shows what MakeMKV and each optical drive are doing, then files finished rips into Jellyfin libraries using names from TMDb.</p>
-    <p>Films that match exactly one TMDb entry by name and runtime can be filed automatically. Anything uncertain waits for you, and unattended filing never deletes a file.</p>
+    <p>Rips discs from each optical drive using MakeMKV, which you install separately, and watches rips started in its own window. Finished rips are filed into Jellyfin libraries using names from TMDb.</p>
+    <p>Films that match exactly one TMDb entry by name and runtime, or the runtime of a film you picked before ripping, can be filed automatically. Anything uncertain waits for you, and unattended filing never deletes a file.</p>
   </description>
   <provides>
     <binary>ylr-auto</binary>
@@ -21,6 +21,10 @@
   <content_rating type="oars-1.1"/>
   <screenshots>
     <screenshot type="default">
+      <caption>An opened disc, with TMDb matches above the titles to tick</caption>
+      <image>https://raw.githubusercontent.com/cpntodd/YLR-Auto/main/docs/screenshot-drive.png</image>
+    </screenshot>
+    <screenshot>
       <caption>Finished rips waiting, with TMDb matches, posters and main actors</caption>
       <image>https://raw.githubusercontent.com/cpntodd/YLR-Auto/main/docs/screenshot.png</image>
     </screenshot>
@@ -34,6 +38,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="2.0.0" date="2026-11-06">
+      <description>
+        <p>Rips from each optical drive without opening MakeMKV's window. Open a disc, pick what it is on TMDb, tick its titles and rip. Drives can run at once, with progress throughout, and eject when they finish. The AppImage can now update itself with AppImageUpdate.</p>
+      </description>
+    </release>
     <release version="1.1.1" date="2026-11-06">
       <description>
         <p>Says that MakeMKV is needed, and how to get it, when it is absent.</p>

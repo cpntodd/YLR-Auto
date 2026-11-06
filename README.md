@@ -6,16 +6,16 @@
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)](https://www.rust-lang.org/)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue)](#install)
 
-A desktop companion for [MakeMKV](https://www.makemkv.com/) on Linux. It shows
-what MakeMKV and your optical drives are doing, then files finished rips into
-[Jellyfin](https://jellyfin.org/) libraries, with names and posters from
-[TMDb](https://www.themoviedb.org/).
+A desktop app for ripping discs with [MakeMKV](https://www.makemkv.com/) on Linux. It
+rips from each optical drive, or watches rips you start in MakeMKV's own window, then
+files finished rips into [Jellyfin](https://jellyfin.org/) libraries, with names and
+posters from [TMDb](https://www.themoviedb.org/).
 
-![YLR-Auto with three finished rips waiting, showing TMDb matches with posters and main actors for one of them](docs/screenshot.png)
+![An opened disc in YLR-Auto, with TMDb matches, posters and main actors above the disc's titles to tick](docs/screenshot-drive.png)
 
-YLR-Auto watches MakeMKV from the outside and does not control it. MakeMKV is a
-separate program that you install yourself. This project is not affiliated with
-MakeMKV, Jellyfin or TMDb.
+YLR-Auto rips by running `makemkvcon`, the command-line program included with MakeMKV.
+MakeMKV is a separate program that you install yourself. This project is not affiliated
+with MakeMKV, Jellyfin or TMDb.
 
 ## Install
 
@@ -23,17 +23,19 @@ Download a package from the [releases page](https://github.com/cpntodd/YLR-Auto/
 
 **Debian 13, Ubuntu 24.04 or newer (.deb)**
 
-    sudo apt install ./ylr-auto_1.1.1_amd64.deb
+    sudo apt install ./ylr-auto_2.0.0_amd64.deb
 
 Ubuntu 24.04 meets the package's version requirements, but has not been tested.
 
 **Other x86-64 distributions (AppImage)**
 
-    chmod +x YLR-Auto-1.1.1-x86_64.AppImage
-    ./YLR-Auto-1.1.1-x86_64.AppImage
+    chmod +x YLR-Auto-2.0.0-x86_64.AppImage
+    ./YLR-Auto-2.0.0-x86_64.AppImage
 
 The AppImage bundles GTK, libadwaita and its own C library, so it needs nothing else
-installed. It has been tested only on Debian 13, and uses software rendering.
+installed. It has been tested only on Debian 13, and uses software rendering. From 2.0.0
+it carries update information, so
+[AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) can update it.
 
 **From source**
 
@@ -45,43 +47,81 @@ Install MakeMKV from its
 
 ## Set up
 
-1. In MakeMKV, open **Preferences, General, Default destination** and choose
-   **Semi-Auto**, so each disc rips into its own folder. A banner in YLR-Auto
-   offers to use MakeMKV's folder if the two differ.
-2. In YLR-Auto, open the gear menu and add a TMDb API key (a free v3 key or v4 read
-   access token from themoviedb.org), then set your library folders.
+1. In YLR-Auto, open the gear menu and add a TMDb API key (a free v3 key or v4 read
+   access token from themoviedb.org), then set your rip folder and library folders.
+2. If you also rip from MakeMKV's own window, open its **Preferences, General, Default
+   destination** and choose **Semi-Auto**, so each disc rips into its own folder. A
+   banner in YLR-Auto offers to use MakeMKV's folder if the two differ.
 
 The key and settings are saved in `~/.config/littlerippa-autosort/config.json`,
 readable by you only. The `TMDB_API_KEY` environment variable overrides the saved
 key. A library folder that does not exist is created only when its parent exists,
 so nothing is written while a network share is unmounted.
 
-## Monitoring
+## Ripping a disc
 
-The left column shows whether MakeMKV is open or ripping. Each rip has its own
-title, data written, speed and time elapsed. Each drive is listed with its disc
-and an Eject button. **Open MakeMKV** is always available, because MakeMKV's
-single-drive mode runs one instance per drive.
+Each drive in the left column shows its disc, with **Open** and Eject buttons.
 
-MakeMKV offers no progress interface to other programs, so this is read from
-`/proc` and udev. MakeMKV only shows a percentage in its window title while
-minimised, so the percentage and time left appear only then, and only on X11.
+1. **Open** scans the disc and shows its page on the right. Clicking a drive also shows
+   its page, and the right pane only ever changes when you click.
+2. **Find the film or series.** The label is searched on TMDb, with posters and main
+   actors beside each result. Click the right one, or edit the name or year and search
+   again. Choosing **Series** searches for shows instead.
+3. **Tick the titles to rip.** The main title starts ticked if it is at least twice as
+   long as every other title. Clicking a film ticks the title with its TMDb runtime, if
+   one is that long. Expand a title to see its tracks.
+
+   PAL discs usually run about 4% short of the runtime TMDb lists, so no title may match.
+   The ticks then stay as they were, and such a rip waits for you instead of being filed
+   automatically.
+4. **Rip Selected**, or **Rip** on the drive's row. Each rip has its own progress bar,
+   percentage and time left, and all your drives can rip at once.
+
+Finished rips go to a new folder named after the disc, in the rip folder, then on to
+[automatic filing](#automatic-filing) or **Rips to file**. **Eject the disc when a rip
+finishes** in Settings ejects it, which a dialog in MakeMKV's window would prevent.
+
+**Stop** asks first, then removes the unfinished title. Titles already finished stay and
+wait for you. If a rip fails, the row gives the reason and **Retry**, and the disc stays
+in the drive. Quitting while a drive is busy asks first, then stops it.
+
+Audio and subtitle tracks follow the default selection rule in **Preferences, Advanced**
+in MakeMKV's window, because no `makemkvcon` option for choosing tracks in one rip was
+found. Rip from MakeMKV's window if you need to choose them.
+
+## Using MakeMKV's window
+
+**Open MakeMKV** is always available, for discs that need it, and YLR-Auto still watches
+what it does. The left column shows each rip's title, data written, speed and time
+elapsed. **Open** is disabled on a drive a MakeMKV window holds, until you close that
+disc or window. MakeMKV's single-drive mode runs one instance per drive.
+
+MakeMKV offers no progress interface to other programs, so this is read from `/proc` and
+udev. MakeMKV only shows a percentage in its window title while minimised, so for these
+rips the percentage and time left appear only then, and only on X11.
+
+## Running in the tray
 
 The first start adds YLR-Auto to login startup, which you can turn off in Settings.
-Closing the window keeps it monitoring from the tray; use the tray menu to quit.
-While ripping, the tray icon's tooltip shows each rip's percentage when MakeMKV gives one.
-Without a tray, closing the window quits. Cinnamon shows the icon through
+Closing the window keeps it running from the tray, rips included; use the tray menu to
+quit. While ripping, the tray icon's tooltip shows each rip's percentage when one is
+known. Without a tray, closing the window quits. Cinnamon shows the icon through
 `xapp-sn-watcher`, and GNOME needs an AppIndicator extension.
 
 ## Automatic filing
 
-When MakeMKV finishes a rip that YLR-Auto saw being written, a film is filed with
-no action from you only if all of these hold:
+When a rip that YLR-Auto ran or saw being written finishes, a film is filed with no
+action from you only if all of these hold:
 
 - the disc label does not look like a series;
 - no other title is at least 80% as long as the longest title;
 - exactly one TMDb film has the label's exact name and the rip's runtime;
 - the library has no copy of that film in any recognised form.
+
+If you clicked a film on the disc's page before ripping, that film replaces the search
+by name and the label is not considered, but its runtime must still match the rip and the
+other checks still apply. A rip you picked as a series always waits for you, and the
+filing page opens with your pick already chosen.
 
 Anything else stays listed as **Needs you**, with the reason, and a notification
 opens it. Rips already in the folder are never filed automatically. MakeMKV writes a
@@ -98,6 +138,8 @@ The list refreshes every 30 seconds and whenever a rip starts or finishes, and s
 every folder under the rip folder that holds `.mkv` files, including hand-made
 layouts such as `Angel/S1/D3`. A rip seen finishing is **Ready** at once. Any other
 folder is **Ready** once no file is open and nothing has changed for 2 minutes.
+
+![A rip selected for filing, with TMDb matches, posters and main actors](docs/screenshot.png)
 
 Select a rip, then:
 
@@ -187,9 +229,28 @@ Click the logo to play it again, or use the button at the top left to mute it.
 
 ## Test results
 
-Results for 1.1.0, the first Rust version, on Debian 13 with an AMD Ryzen 5 2600.
+### Ripping through `makemkvcon`, 2.0.0
+
+Checked on Debian 13 with MakeMKV 2.0.0, a Blu-ray drive and two DVD drives, using three
+DVDs.
+
+| Check | Result |
+|---|---|
+| Scanning three discs at once | worked, in 10, 19 and 79 seconds |
+| Ripping from three drives at once | worked; two full films in about 13 minutes each |
+| Eject straight after each rip | worked on all three |
+| Runtime of each rip against the scan | within 7 seconds |
+| Stopping a rip | `makemkvcon` exited in 3 seconds, leaving a file with no runtime |
+| Open, choose titles, rip and stop in the window, by hand | passes |
+| Unit and integration tests | 149 of 149 pass |
+
+Not tested: a real read error or an expired MakeMKV key, whose messages come from MakeMKV
+itself, a Blu-ray disc or a series disc through **Open**, and `makemkvcon` on another
+desktop or distribution.
 
 ### Rust against the last Python version
+
+Results for 1.1.0, the first Rust version, on Debian 13 with an AMD Ryzen 5 2600.
 
 | Measure | Python 1.0.4 | Rust 1.1.0 | Change |
 |---|---|---|---|
@@ -207,7 +268,7 @@ own session bus and the same dark theme in both, while three real MakeMKV rips l
 machine. Times on a desktop
 will differ, but both versions were measured the same way.
 
-### Behaviour
+#### Behaviour
 
 | Check | Result |
 |---|---|
@@ -227,13 +288,12 @@ reads it as an unknown runtime. Python's crash cases were left out of the count 
 The Python version and its comparison tools were removed in 1.1.0, so these two tables can
 only be reproduced from the commit before that removal.
 
-### Not tested
+#### Not tested
 
 - The AppImage on the oldest supported Ubuntu LTS, which the AppImage catalog's own test
   checks. It carries its own C library for this reason.
 - The `.deb` on Ubuntu 24.04, whose versions meet its dependencies.
-- The tray icon on desktops other than Cinnamon, and a real TMDb search with a valid key.
-  The HTTPS client was tested against TMDb with an invalid key.
+- The tray icon on desktops other than Cinnamon.
 
 ## Build and test
 

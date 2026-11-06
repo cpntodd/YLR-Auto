@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "ylr-auto"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "ylr-core"
-version = "1.1.1"
+version = "2.0.0"
 dependencies = [
  "fancy-regex",
  "filetime",

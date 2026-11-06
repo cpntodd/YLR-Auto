@@ -278,7 +278,7 @@ pub fn desktop_entry_text(launch: &Launch, arguments: &[&str]) -> String {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name={APP_NAME}\n\
-         Comment=Watch MakeMKV and file finished rips into Jellyfin\n\
+         Comment=Rip discs with MakeMKV and file them into Jellyfin\n\
          Exec={}\n\
          Icon={APP_ID}\n\
          Categories=AudioVideo;Video;\n\

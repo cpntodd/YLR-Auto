@@ -13,5 +13,7 @@ rather than a public issue. Only the latest release is supported.
 - It moves and, when you file a duplicate by hand, deletes video files in the folders
   you configure.
 - It reads only the destination settings from MakeMKV's `settings.conf`, never the
-  licence key.
+  licence key. It runs `makemkvcon`, which reads that file itself.
+- It creates a folder in the rip folder for each rip, and deletes the unfinished title
+  when you stop one.
 - It writes desktop entries to your application menu and login startup folders.

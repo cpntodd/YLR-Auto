@@ -7,7 +7,7 @@ moved or deleted, open an issue first, because those safeguards are deliberate.
 
 | File | Purpose |
 |---|---|
-| `crates/ylr-core` | Filing rules, runtime reading, the TMDb client, and reading MakeMKV's state from `/proc`, udev and its window title. No GUI code. |
+| `crates/ylr-core` | Filing rules, runtime reading, the TMDb client, running `makemkvcon`, and reading MakeMKV's state from `/proc`, udev and its window title. No GUI code. |
 | `crates/ylr-auto` | The GTK 4 window and the tray icon. Disk and network work runs on background threads. |
 | `packaging/` | Desktop entry, icon, metadata and package build scripts. |
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.0 (2026-11-06)
+
+- Rip from each drive without opening MakeMKV's window. **Open** scans a disc and shows
+  its page, where you look it up on TMDb and tick titles; a row's **Rip** then uses those
+  ticks. YLR-Auto runs `makemkvcon`, which is part of MakeMKV, so nothing new is needed.
+- Eject after a rip without a MakeMKV dialog holding the drive, using the existing
+  setting. MakeMKV's window and the monitoring of rips started there both stay.
+- Show percentage and time left for these rips at all times, on any display server.
+- Tick the title with the runtime TMDb lists for the match, and carry a clicked match to
+  filing. A picked film files itself when its runtime agrees and automatic filing is on.
+- Stop a rip with a confirmation, removing the unfinished title. Quitting warns first.
+- Disable ripping on a drive a MakeMKV window holds, and say why.
+- Embed update information in the AppImage and publish a `.zsync` file beside it, so
+  AppImageUpdate can update it.
+
 ## 1.1.1 (2026-11-06)
 
 - Say that MakeMKV is needed, and how to get it, instead of showing "not installed". The
