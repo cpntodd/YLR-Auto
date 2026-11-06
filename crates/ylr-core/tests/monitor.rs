@@ -275,18 +275,10 @@ mod packaged_launch {
             pair("GSK_RENDERER", "cairo"),
             pair("YLR_AUTO_HOST_GSK_RENDERER", HOST_ENV_UNSET),
             pair("APPDIR", "/bundle"),
-            pair("YLR_AUTO_ENV_READY", "1"),
-            pair("YLR_AUTO_PYTHON", "/bundle/py"),
         ];
         let host = host_environment_from(bundled);
         assert_eq!(host.get(OsStr::new("XDG_DATA_DIRS")).unwrap(), "/usr/share");
-        for name in [
-            "GSK_RENDERER",
-            "APPDIR",
-            "YLR_AUTO_ENV_READY",
-            "YLR_AUTO_PYTHON",
-            "YLR_AUTO_HOST_XDG_DATA_DIRS",
-        ] {
+        for name in ["GSK_RENDERER", "APPDIR", "YLR_AUTO_HOST_XDG_DATA_DIRS"] {
             assert!(!host.contains_key(OsStr::new(name)), "{name}");
         }
     }

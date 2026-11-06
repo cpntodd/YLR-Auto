@@ -59,8 +59,8 @@ fn lookaround_pattern(text: &str) -> LookaroundRegex {
     LookaroundRegex::new(text).expect("hard-coded pattern is valid")
 }
 
-// Patterns write whitespace as [\s\x1c-\x1f] because the file separator controls
-// count as whitespace in the Python version, and \s here leaves them out.
+// Patterns write whitespace as [\s\x1c-\x1f] so the file separator controls count as
+// whitespace, as they do in a disc label's other handling, and \s leaves them out.
 
 /// Trailing disc-label tokens that are not part of the movie's name.
 static LABEL_NOISE: LazyLock<Regex> = LazyLock::new(|| {

@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 use ylr_core::tmdb::*;
 
+type RecordedRequest = (String, Vec<(String, String)>);
+
 #[derive(Clone, Default)]
 struct FakeNetwork {
     bodies: Arc<Mutex<Vec<Result<HttpResponse, String>>>>,
-    requests: Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
 }
 
 impl FakeNetwork {

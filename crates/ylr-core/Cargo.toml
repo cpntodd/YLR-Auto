@@ -17,6 +17,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 xattr = "1"
 
 [dev-dependencies]
-# The comparison with Python sends exact floats to the oracle.
-serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = "3"
+
+[lints]
+workspace = true

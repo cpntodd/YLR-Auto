@@ -1,8 +1,16 @@
 [workspace]
-members = ["crates/ylr-core"]
+members = ["crates/ylr-core", "crates/ylr-auto"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.4"
+version = "1.1.0"
 edition = "2021"
 license = "MIT"
+
+# Returned values are named before being returned, as a matter of house style.
+[workspace.lints.clippy]
+let_and_return = "allow"
+
+[profile.release]
+lto = true
+strip = true

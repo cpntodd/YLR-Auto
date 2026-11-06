@@ -33,14 +33,7 @@ const INSTALLED_EXECUTABLE: &str = "/usr/bin/ylr-auto";
 const INSTALLED_COMMAND: &str = "ylr-auto";
 const HOST_ENV_PREFIX: &str = "YLR_AUTO_HOST_";
 pub const HOST_ENV_UNSET: &str = "__unset__";
-const BUNDLE_ONLY_VARIABLES: [&str; 6] = [
-    "APPDIR",
-    "APPIMAGE",
-    "ARGV0",
-    "OWD",
-    "YLR_AUTO_ENV_READY",
-    "YLR_AUTO_PYTHON",
-];
+const BUNDLE_ONLY_VARIABLES: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
 const GUI_PROCESS_NAME: &str = "makemkv";
 const BACKEND_PROCESS_NAME: &str = "makemkvcon";
@@ -393,6 +386,15 @@ pub fn host_environment_from(
 
 pub fn host_environment() -> BTreeMap<OsString, OsString> {
     host_environment_from(env::vars_os())
+}
+
+/// This program's path. Inside the AppImage the bundled loader runs it, so the kernel
+/// reports the loader as the executable, and only APPDIR says where the program is.
+pub fn current_executable() -> PathBuf {
+    if let Some(appdir) = env::var_os("APPDIR").filter(|dir| !dir.is_empty()) {
+        return Path::new(&appdir).join("usr/bin/ylr-auto");
+    }
+    env::current_exe().unwrap_or_default()
 }
 
 /// The command that starts this app again, for its desktop entries. An AppImage must
